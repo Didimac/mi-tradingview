@@ -142,6 +142,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const measureRef = useRef(measure);
   measureRef.current = measure;
 
+  const selectedScore = useChartStore((s) => s.selectedScore);
+  const scoreLinesRef = useRef<IPriceLine[]>([]);
+
   // Helper — compute pane top offsets from chart layout
   function recomputePaneOffsets() {
     if (!chartRef.current) return;
@@ -547,6 +550,45 @@ export function PriceChart({ symbol, timeframe }: Props) {
       }
     }
   }, [priceLines, symbol]);
+
+  // SL/TP/TP2 lines from OpportunityBoard selection
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    // Remove previous score lines
+    for (const line of scoreLinesRef.current) {
+      try { series.removePriceLine(line); } catch {}
+    }
+    scoreLinesRef.current = [];
+
+    if (!selectedScore || selectedScore.symbol !== symbol || selectedScore.stopLoss === 0) return;
+
+    const sl = series.createPriceLine({
+      price: selectedScore.stopLoss,
+      color: "#ef5350",
+      lineWidth: 1,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: "SL",
+    });
+    const tp1 = series.createPriceLine({
+      price: selectedScore.takeProfit1,
+      color: "#ffb74d",
+      lineWidth: 1,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: "TP1 50%",
+    });
+    const tp2 = series.createPriceLine({
+      price: selectedScore.takeProfit2,
+      color: "#26a69a",
+      lineWidth: 1,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: "TP2 50%",
+    });
+    scoreLinesRef.current = [sl, tp1, tp2];
+  }, [selectedScore, symbol]);
 
   // Cursor style when drawing tools are active + reset measure on tool change
   useEffect(() => {

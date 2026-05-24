@@ -1,0 +1,237 @@
+"use client";
+
+import { useEffect, useState, useCallback, useRef } from "react";
+import { fetchKlines } from "@/lib/binance/rest";
+import {
+  scoreOpportunityDual,
+  calcBtcRegime,
+  isAlertEligible,
+  type OpportunityScore,
+  type BtcRegime,
+} from "@/lib/scoring/opportunityScorer";
+import { sendSignalAlert } from "@/lib/telegram/telegramNotifier";
+import { useChartStore } from "@/lib/store/chart-store";
+import { usePaperTrading } from "@/lib/papertrading/paperTradingEngine";
+import { cn } from "@/lib/utils";
+import { formatPrice } from "@/lib/format";
+import { TrendingUp, TrendingDown, Minus, RefreshCw, BarChart3 } from "lucide-react";
+
+const PAIRS = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+  "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TONUSDT",
+];
+
+export type { OpportunityScore };
+
+function ScoreBar({ score }: { score: number }) {
+  const color =
+    score >= 70 ? "bg-bull" : score >= 50 ? "bg-yellow-500" : "bg-bear";
+  return (
+    <div className="h-1.5 w-12 rounded-full bg-border/40 overflow-hidden">
+      <div
+        className={cn("h-full rounded-full transition-all duration-500", color)}
+        style={{ width: `${score}%` }}
+      />
+    </div>
+  );
+}
+
+function DirIcon({ dir }: { dir: OpportunityScore["direction"] }) {
+  if (dir === "LONG") return <TrendingUp size={10} className="text-bull" />;
+  if (dir === "SHORT") return <TrendingDown size={10} className="text-bear" />;
+  return <Minus size={10} className="text-muted-foreground/40" />;
+}
+
+function ScoreCell({ value }: { value: number }) {
+  return (
+    <span
+      className={cn(
+        "text-[10px] font-mono font-bold tabular-nums",
+        value >= 70 ? "text-bull" : value >= 50 ? "text-yellow-500" : "text-muted-foreground/50",
+      )}
+    >
+      {value}
+    </span>
+  );
+}
+
+export function useOpportunityScores() {
+  const [scores, setScores] = useState<OpportunityScore[]>([]);
+  const [regime, setRegime] = useState<BtcRegime>("BULL");
+  const [loading, setLoading] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const alertedRef = useRef<Set<string>>(new Set());
+  const prevHighRef = useRef<Set<string>>(new Set());
+  const addToast = usePaperTrading((s) => s.addToast);
+  const capital = usePaperTrading((s) => s.capital);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const btcDaily = await fetchKlines("BTCUSDT", "1d", 210);
+      const btcRegime = calcBtcRegime(btcDaily);
+      setRegime(btcRegime);
+
+      const results = await Promise.all(
+        PAIRS.map(async (symbol) => {
+          const [c1h, c4h] = await Promise.all([
+            fetchKlines(symbol, "1h", 100),
+            fetchKlines(symbol, "4h", 100),
+          ]);
+          return scoreOpportunityDual(symbol, c1h, c4h, btcRegime, capital);
+        }),
+      );
+      results.sort((a, b) => b.score - a.score);
+      setScores(results);
+      setLastUpdate(new Date());
+
+      const currentHigh = new Set<string>();
+      for (const r of results) {
+        if (r.score >= 70) {
+          currentHigh.add(r.symbol);
+          if (!prevHighRef.current.has(r.symbol)) {
+            addToast("signal", `${r.symbol.replace("USDT", "")} score ${r.score}/100 ${r.direction}`);
+          }
+        }
+
+        if (isAlertEligible(r) && !alertedRef.current.has(r.symbol)) {
+          alertedRef.current.add(r.symbol);
+          sendSignalAlert(r);
+        }
+
+        if (r.score < 50 && alertedRef.current.has(r.symbol)) {
+          alertedRef.current.delete(r.symbol);
+        }
+      }
+      prevHighRef.current = currentHigh;
+    } catch {
+      // silently ignore
+    }
+    setLoading(false);
+  }, [addToast, capital]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 60 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return { scores, regime, loading, lastUpdate, refresh };
+}
+
+export function OpportunityBoard() {
+  const setSymbol = useChartStore((s) => s.setSymbol);
+  const currentSymbol = useChartStore((s) => s.symbol);
+  const { scores, regime, loading, lastUpdate, refresh } = useOpportunityScores();
+
+  const setSelectedScore = useChartStore((s) => s.setSelectedScore);
+
+  const handleRowClick = (s: OpportunityScore) => {
+    setSymbol(s.symbol);
+    setSelectedScore(s);
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-panel border-t border-border">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/40">
+        <div className="flex items-center gap-1.5">
+          <BarChart3 size={12} className="text-primary" />
+          <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            Oportunidades
+          </span>
+          <span
+            className={cn(
+              "text-[9px] font-bold px-1.5 py-0.5 rounded",
+              regime === "BULL"
+                ? "bg-bull/20 text-bull"
+                : "bg-bear/20 text-bear",
+            )}
+          >
+            BTC {regime}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {lastUpdate && (
+            <span className="text-[9px] text-muted-foreground/50">
+              {lastUpdate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          )}
+          <button
+            onClick={refresh}
+            disabled={loading}
+            className="text-muted-foreground/50 hover:text-muted-foreground transition-colors disabled:opacity-30"
+          >
+            <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
+          </button>
+        </div>
+      </div>
+
+      {/* Table header */}
+      <div className="grid grid-cols-[60px_40px_20px_30px_30px_55px_55px_55px_55px] gap-0.5 px-2 py-1 text-[8px] uppercase tracking-wider text-muted-foreground/50 border-b border-border/20">
+        <span>Par</span>
+        <span className="text-right">Score</span>
+        <span className="text-center">Dir</span>
+        <span className="text-center">1H</span>
+        <span className="text-center">4H</span>
+        <span className="text-right">Lotaje</span>
+        <span className="text-right">SL</span>
+        <span className="text-right">TP1</span>
+        <span className="text-right">TP2</span>
+      </div>
+
+      {/* Rows */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {scores.length === 0 && (
+          <div className="flex items-center justify-center h-full">
+            <span className="text-[10px] text-muted-foreground/40">
+              {loading ? "Analizando 1H + 4H..." : "Sin datos"}
+            </span>
+          </div>
+        )}
+        {scores.map((s) => (
+          <button
+            key={s.symbol}
+            onClick={() => handleRowClick(s)}
+            className={cn(
+              "grid grid-cols-[60px_40px_20px_30px_30px_55px_55px_55px_55px] gap-0.5 w-full px-2 py-1 items-center text-left transition-colors hover:bg-border/20",
+              s.symbol === currentSymbol && "bg-border/30",
+            )}
+          >
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] font-semibold text-foreground">
+                {s.symbol.replace("USDT", "")}
+              </span>
+              <ScoreBar score={s.score} />
+            </div>
+            <span
+              className={cn(
+                "text-right text-[11px] font-mono font-bold tabular-nums",
+                s.score >= 70 ? "text-bull" : s.score >= 50 ? "text-yellow-500" : "text-muted-foreground",
+              )}
+            >
+              {s.score}
+            </span>
+            <span className="flex justify-center">
+              <DirIcon dir={s.direction} />
+            </span>
+            <span className="flex justify-center"><ScoreCell value={s.score1H} /></span>
+            <span className="flex justify-center"><ScoreCell value={s.score4H} /></span>
+            <span className="text-right text-[9px] font-mono text-muted-foreground tabular-nums">
+              {s.positionUSDT > 0 ? `$${s.positionUSDT.toFixed(0)}` : "–"}
+            </span>
+            <span className="text-right text-[9px] font-mono text-bear tabular-nums">
+              {s.stopLoss > 0 ? formatPrice(s.stopLoss) : "–"}
+            </span>
+            <span className="text-right text-[9px] font-mono text-yellow-500 tabular-nums">
+              {s.takeProfit1 > 0 ? formatPrice(s.takeProfit1) : "–"}
+            </span>
+            <span className="text-right text-[9px] font-mono text-bull tabular-nums">
+              {s.takeProfit2 > 0 ? formatPrice(s.takeProfit2) : "–"}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}

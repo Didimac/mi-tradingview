@@ -21,10 +21,35 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
   const position = usePaperTrading((s) => s.position);
   const history = usePaperTrading((s) => s.history);
   const reset = usePaperTrading((s) => s.reset);
+  const openTrade = usePaperTrading((s) => s.openTrade);
   const chartSymbol = useChartStore((s) => s.symbol);
 
   useEffect(() => {
     startPriceMonitor();
+  }, []);
+
+  // Poll for pending trades from Telegram webhook
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/trades/pending");
+        const data = await res.json();
+        if (data.trades?.length > 0) {
+          for (const t of data.trades) {
+            openTrade({
+              symbol: t.symbol,
+              side: t.side,
+              price: t.price,
+              sl: t.sl,
+              tp: t.tp1,
+              reason: t.reason,
+            });
+          }
+        }
+      } catch {}
+    };
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
   }, []);
 
   // Unrealized P&L

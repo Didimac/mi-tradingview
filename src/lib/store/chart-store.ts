@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Timeframe } from "@/lib/binance/types";
+import type { OpportunityScore } from "@/lib/scoring/opportunityScorer";
 
 export type IndicatorKey =
   | "ema20"
@@ -79,6 +80,8 @@ interface ChartState {
   symbolDialogOpen: boolean;
   /** Which indicator's settings dialog is open (null = closed) */
   settingsTarget: IndicatorKey | null;
+  /** Selected score from OpportunityBoard — used to draw SL/TP lines */
+  selectedScore: OpportunityScore | null;
 
   // Actions
   setSymbol: (s: string) => void;
@@ -94,6 +97,7 @@ interface ChartState {
   clearPriceLines: (symbol?: string) => void;
   setSymbolDialogOpen: (v: boolean) => void;
   setSettingsTarget: (k: IndicatorKey | null) => void;
+  setSelectedScore: (s: OpportunityScore | null) => void;
 }
 
 export const useChartStore = create<ChartState>()(
@@ -123,6 +127,7 @@ export const useChartStore = create<ChartState>()(
       priceLines: [],
       symbolDialogOpen: false,
       settingsTarget: null,
+      selectedScore: null,
 
       setSymbol: (symbol) => set({ symbol }),
       setTimeframe: (timeframe) => set({ timeframe }),
@@ -176,6 +181,7 @@ export const useChartStore = create<ChartState>()(
         })),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
       setSettingsTarget: (settingsTarget) => set({ settingsTarget }),
+      setSelectedScore: (selectedScore) => set({ selectedScore }),
     }),
     {
       name: "tv-gratis-chart-state",
