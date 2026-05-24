@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Star, Plus, MoreHorizontal, X } from "lucide-react";
 import { fetchTickers24h } from "@/lib/binance/rest";
 import { getBinanceWS } from "@/lib/binance/ws";
 import { useChartStore } from "@/lib/store/chart-store";
@@ -14,6 +14,19 @@ interface Row {
   price: number;
   pct: number;
 }
+
+const ASSET_META: Record<string, { icon: string; iconBg: string; name: string }> = {
+  BTCUSDT:  { icon: "₿", iconBg: "#f7931a", name: "Bitcoin" },
+  ETHUSDT:  { icon: "Ξ", iconBg: "#627eea", name: "Ethereum" },
+  SOLUSDT:  { icon: "◎", iconBg: "#14f195", name: "Solana" },
+  BNBUSDT:  { icon: "B", iconBg: "#f3ba2f", name: "BNB" },
+  XRPUSDT:  { icon: "X", iconBg: "#23292f", name: "Ripple" },
+  DOGEUSDT: { icon: "D", iconBg: "#c3a634", name: "Dogecoin" },
+  ADAUSDT:  { icon: "A", iconBg: "#0033ad", name: "Cardano" },
+  AVAXUSDT: { icon: "A", iconBg: "#e84142", name: "Avalanche" },
+  LINKUSDT: { icon: "L", iconBg: "#2a5ada", name: "Chainlink" },
+  MATICUSDT:{ icon: "M", iconBg: "#8247e5", name: "Polygon" },
+};
 
 export function Watchlist() {
   const watchlist = useChartStore((s) => s.watchlist);
@@ -50,18 +63,10 @@ export function Watchlist() {
         if (prevRow) {
           if (tick.close > prevRow.price) {
             setFlash((f) => ({ ...f, [tick.symbol]: "up" }));
-            setTimeout(
-              () =>
-                setFlash((f) => ({ ...f, [tick.symbol]: null })),
-              300,
-            );
+            setTimeout(() => setFlash((f) => ({ ...f, [tick.symbol]: null })), 300);
           } else if (tick.close < prevRow.price) {
             setFlash((f) => ({ ...f, [tick.symbol]: "down" }));
-            setTimeout(
-              () =>
-                setFlash((f) => ({ ...f, [tick.symbol]: null })),
-              300,
-            );
+            setTimeout(() => setFlash((f) => ({ ...f, [tick.symbol]: null })), 300);
           }
         }
         return {
@@ -83,65 +88,95 @@ export function Watchlist() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-tv-border px-3 py-2">
-        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-tv-text-muted">
-          Watchlist
-        </h2>
-        <button
-          onClick={() => openSymbolDialog(true)}
-          className="rounded p-1 text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-text"
-          title="Agregar símbolo"
-          aria-label="Agregar al watchlist"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
+      {/* Header */}
+      <div className="h-9 flex items-center justify-between px-3 border-b border-border">
+        <div className="flex items-center gap-2">
+          <Star className="w-3.5 h-3.5 text-primary" fill="currentColor" />
+          <span className="text-xs font-semibold uppercase tracking-wider">Lista de seguimiento</span>
+        </div>
+        <div className="flex items-center gap-1 text-muted-foreground">
+          <button
+            onClick={() => openSymbolDialog(true)}
+            className="hover:text-foreground"
+            title="Agregar símbolo"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+          <button className="hover:text-foreground">
+            <MoreHorizontal className="w-4 h-4" />
+          </button>
+        </div>
       </div>
-      <div className="grid grid-cols-[1fr_auto_auto] gap-2 border-b border-tv-border px-3 py-1.5 text-[10px] uppercase tracking-wider text-tv-text-dim">
+
+      {/* Column headers */}
+      <div className="grid grid-cols-[1fr_auto_auto] px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border">
         <span>Símbolo</span>
-        <span className="text-right">Precio</span>
-        <span className="text-right">24h</span>
+        <span className="text-right pr-3">Último</span>
+        <span className="text-right w-16">24h %</span>
       </div>
+
+      {/* List */}
       <ScrollArea className="flex-1">
         <div className="flex flex-col">
           {watchlist.map((s) => {
             const row = rows[s];
             const isActive = s === symbol;
             const f = flash[s];
+            const meta = ASSET_META[s];
+            const up = row ? row.pct >= 0 : true;
+
             return (
               <div
                 key={s}
                 onClick={() => setSymbol(s)}
+                role="button"
+                tabIndex={0}
                 className={cn(
-                  "group grid cursor-pointer grid-cols-[1fr_auto_auto] items-center gap-2 px-3 py-1.5 text-xs transition-colors",
-                  "hover:bg-tv-panel-hover",
-                  isActive && "bg-tv-panel-hover",
+                  "group w-full grid grid-cols-[1fr_auto_auto] items-center px-3 py-2 text-left border-b border-border/50 transition cursor-pointer",
+                  isActive ? "bg-accent" : "hover:bg-panel-hover",
                 )}
               >
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-tv-text">
-                    {s.replace("USDT", "")}
-                  </span>
-                  <span className="text-[10px] text-tv-text-dim">USDT</span>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {meta ? (
+                    <span
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0"
+                      style={{ backgroundColor: meta.iconBg, color: "#0b0e14" }}
+                    >
+                      {meta.icon}
+                    </span>
+                  ) : (
+                    <span className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 bg-muted text-muted-foreground">
+                      {s.charAt(0)}
+                    </span>
+                  )}
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold truncate">{s.replace("USDT", "")}</div>
+                    <div className="text-[10px] text-muted-foreground truncate">
+                      {meta?.name ?? s}
+                    </div>
+                  </div>
                 </div>
-                <span
+
+                <div
                   className={cn(
-                    "text-right tabular-nums transition-colors",
-                    f === "up" && "text-tv-green",
-                    f === "down" && "text-tv-red",
-                    !f && "text-tv-text",
+                    "font-mono text-xs text-right pr-3 tabular-nums transition-colors",
+                    f === "up" && "text-bull",
+                    f === "down" && "text-bear",
+                    !f && "text-foreground",
                   )}
                 >
                   {row ? formatPrice(row.price) : "—"}
-                </span>
+                </div>
+
                 <div className="flex items-center justify-end gap-1">
                   <span
                     className={cn(
-                      "tabular-nums",
+                      "font-mono text-xs text-right w-16 px-1.5 py-0.5 rounded tabular-nums",
                       row
-                        ? row.pct >= 0
-                          ? "text-tv-green"
-                          : "text-tv-red"
-                        : "text-tv-text-muted",
+                        ? up
+                          ? "text-bull bg-bull/10"
+                          : "text-bear bg-bear/10"
+                        : "text-muted-foreground",
                     )}
                   >
                     {row ? formatPct(row.pct) : "—"}
@@ -151,7 +186,7 @@ export function Watchlist() {
                       e.stopPropagation();
                       removeFromWatchlist(s);
                     }}
-                    className="invisible rounded p-0.5 text-tv-text-muted hover:bg-tv-bg hover:text-tv-red group-hover:visible"
+                    className="invisible rounded p-0.5 text-muted-foreground hover:bg-background hover:text-bear group-hover:visible"
                     aria-label={`Quitar ${s} del watchlist`}
                   >
                     <X className="h-3 w-3" />
@@ -161,12 +196,25 @@ export function Watchlist() {
             );
           })}
           {watchlist.length === 0 && (
-            <div className="p-4 text-center text-xs text-tv-text-muted">
+            <div className="p-4 text-center text-xs text-muted-foreground">
               Tu watchlist está vacío
             </div>
           )}
         </div>
       </ScrollArea>
+
+      {/* Market summary */}
+      <div className="border-t border-border p-3">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Resumen del mercado</div>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-muted-foreground">Dominancia BTC</span>
+          <span className="font-mono text-foreground">52.4%</span>
+        </div>
+        <div className="flex items-center justify-between text-xs mt-1">
+          <span className="text-muted-foreground">Miedo y codicia</span>
+          <span className="font-mono text-bull">72 · Codicia</span>
+        </div>
+      </div>
     </div>
   );
 }

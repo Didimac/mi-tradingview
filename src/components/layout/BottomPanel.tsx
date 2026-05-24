@@ -6,6 +6,13 @@ import { fetchTicker24h } from "@/lib/binance/rest";
 import type { Ticker24h } from "@/lib/binance/types";
 import { formatPrice, formatPct, formatVolume } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { SignalButton } from "@/components/papertrading/SignalButton";
+
+function fmt(n: number) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
 
 export function BottomPanel() {
   const symbol = useChartStore((s) => s.symbol);
@@ -29,55 +36,54 @@ export function BottomPanel() {
     };
   }, [symbol]);
 
-  const upClass = (n: number) => (n >= 0 ? "text-tv-green" : "text-tv-red");
+  const up = t ? t.priceChangePercent >= 0 : true;
 
   return (
-    <div className="flex h-9 items-center gap-0 border-t border-tv-border bg-tv-panel px-3 text-xs">
-      <Stat label="Símbolo" value={symbol} />
+    <div className="h-14 bg-panel border-t border-border flex items-center px-4 gap-6 shrink-0 overflow-x-auto">
       <Stat
-        label="24h Cambio"
-        value={t ? formatPct(t.priceChangePercent) : "—"}
-        valueClass={t ? upClass(t.priceChangePercent) : ""}
+        label="Precio"
+        value={t ? formatPrice(t.lastPrice) : "—"}
+        accent={up ? "bull" : "bear"}
+        big
       />
       <Stat
-        label="24h Alto"
+        label="Cambio 24h"
+        value={t ? `${up ? "+" : ""}${formatPrice(t.priceChange)} (${formatPct(t.priceChangePercent)})` : "—"}
+        accent={up ? "bull" : "bear"}
+      />
+      <Stat
+        label="Máx 24h"
         value={t ? formatPrice(t.highPrice) : "—"}
-        valueClass="text-tv-green"
+        accent="bull"
       />
       <Stat
-        label="24h Bajo"
+        label="Mín 24h"
         value={t ? formatPrice(t.lowPrice) : "—"}
-        valueClass="text-tv-red"
+        accent="bear"
       />
       <Stat
-        label="24h Vol (base)"
-        value={t ? formatVolume(t.volume) : "—"}
+        label="Volumen 24h"
+        value={t ? fmt(t.quoteVolume) + " USDT" : "—"}
       />
-      <Stat
-        label="24h Vol (USDT)"
-        value={t ? formatVolume(t.quoteVolume) : "—"}
-      />
-      <div className="ml-auto flex items-center gap-2 text-[10px] text-tv-text-dim">
-        <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-tv-green" />
-        <span>Binance · Live</span>
+
+      <div className="flex-1" />
+
+      <div className="flex items-center gap-2">
+        <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-bull mr-1" />
+        <span className="text-[10px] text-muted-foreground">Binance · Live</span>
       </div>
+
+      <SignalButton />
     </div>
   );
 }
 
-function Stat({
-  label,
-  value,
-  valueClass,
-}: {
-  label: string;
-  value: string;
-  valueClass?: string;
-}) {
+function Stat({ label, value, accent, big }: { label: string; value: string; accent?: "bull" | "bear"; big?: boolean }) {
+  const color = accent === "bull" ? "text-bull" : accent === "bear" ? "text-bear" : "text-foreground";
   return (
-    <div className="flex items-center gap-1.5 border-r border-tv-border px-3">
-      <span className="text-tv-text-dim">{label}</span>
-      <span className={cn("font-medium tabular-nums", valueClass ?? "text-tv-text")}>
+    <div className="flex flex-col whitespace-nowrap">
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className={cn("font-mono tabular-nums", big ? "text-base font-bold" : "text-sm font-semibold", color)}>
         {value}
       </span>
     </div>

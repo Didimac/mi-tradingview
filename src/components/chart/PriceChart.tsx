@@ -12,7 +12,7 @@ import {
   type IPriceLine,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { fetchKlines } from "@/lib/binance/rest";
+import { fetchKlines, fetchKlinesBefore } from "@/lib/binance/rest";
 import { getBinanceWS } from "@/lib/binance/ws";
 import { ema, rsi, macd } from "@/lib/indicators";
 import type { Candle, Timeframe } from "@/lib/binance/types";
@@ -24,6 +24,7 @@ import {
 import { formatPrice, formatVolume } from "@/lib/format";
 import { IndicatorPill } from "./IndicatorPill";
 import { MeasureOverlay } from "./MeasureOverlay";
+import { PaperTradingOverlay } from "@/components/papertrading/PaperTradingOverlay";
 
 interface MeasurePoint {
   time: number;
@@ -107,6 +108,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const macdHistRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const candlesRef = useRef<Candle[]>([]);
   const priceLinesMapRef = useRef<Map<string, IPriceLine>>(new Map());
+  const isFetchingMoreRef = useRef(false);
+  const hasMoreHistoryRef = useRef(true);
 
   const indicators = useChartStore((s) => s.indicators);
   const hidden = useChartStore((s) => s.hidden);
@@ -125,6 +128,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
   addPriceLineRef.current = addPriceLine;
   const symbolRef = useRef(symbol);
   symbolRef.current = symbol;
+  const timeframeRef = useRef(timeframe);
+  timeframeRef.current = timeframe;
   const configRef = useRef(config);
   configRef.current = config;
 
@@ -303,6 +308,21 @@ export function PriceChart({ symbol, timeframe }: Props) {
     const logicalRangeHandler = () => setRenderTick((t) => t + 1);
     chart.timeScale().subscribeVisibleLogicalRangeChange(logicalRangeHandler);
 
+    // Lazy-load older candles when user scrolls near the start
+    const lazyLoadHandler = (logicalRange: { from: number; to: number } | null) => {
+      if (!logicalRange || !candleSeriesRef.current) return;
+      // Trigger when the left edge of visible area is within 50 bars of the data start
+      if (logicalRange.from > 50) return;
+      if (isFetchingMoreRef.current || !hasMoreHistoryRef.current) return;
+      const candles = candlesRef.current;
+      if (candles.length === 0) return;
+      const oldest = candles[0];
+      const oldestMs = oldest.time * 1000;
+      isFetchingMoreRef.current = true;
+      loadOlderCandles(oldestMs);
+    };
+    chart.timeScale().subscribeVisibleLogicalRangeChange(lazyLoadHandler);
+
     // ResizeObserver — recompute pane offsets when chart container resizes
     const ro = new ResizeObserver(() => {
       requestAnimationFrame(() => recomputePaneOffsets());
@@ -313,6 +333,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
     return () => {
       chart.timeScale().unsubscribeVisibleTimeRangeChange(tsRangeHandler);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(logicalRangeHandler);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(lazyLoadHandler);
       ro.disconnect();
       chart.remove();
       chartRef.current = null;
@@ -624,10 +645,90 @@ export function PriceChart({ symbol, timeframe }: Props) {
     }));
   }
 
+  // Lazy-load older candles (called from the logical range handler)
+  async function loadOlderCandles(oldestMs: number) {
+    try {
+      const older = await fetchKlinesBefore(
+        symbolRef.current,
+        timeframeRef.current,
+        oldestMs,
+        1000,
+      );
+      if (older.length === 0) {
+        hasMoreHistoryRef.current = false;
+        isFetchingMoreRef.current = false;
+        return;
+      }
+      // Filter out any candles we already have (by time)
+      const existingTimes = new Set(candlesRef.current.map((c) => c.time));
+      const newCandles = older.filter((c) => !existingTimes.has(c.time));
+      if (newCandles.length === 0) {
+        hasMoreHistoryRef.current = false;
+        isFetchingMoreRef.current = false;
+        return;
+      }
+      // Save current logical range so we can restore viewport position after prepending
+      const chart = chartRef.current;
+      const prevLogical = chart?.timeScale().getVisibleLogicalRange();
+      const prevCount = candlesRef.current.length;
+
+      // Prepend to our candle array
+      candlesRef.current = [...newCandles, ...candlesRef.current];
+
+      // Re-set all series data
+      if (candleSeriesRef.current) {
+        candleSeriesRef.current.setData(
+          candlesRef.current.map((k) => ({
+            time: k.time as UTCTimestamp,
+            open: k.open,
+            high: k.high,
+            low: k.low,
+            close: k.close,
+          })),
+        );
+      }
+      if (volumeSeriesRef.current) {
+        volumeSeriesRef.current.setData(
+          candlesRef.current.map((k) => ({
+            time: k.time as UTCTimestamp,
+            value: k.volume,
+            color: k.close >= k.open ? `${TV_COLORS.green}66` : `${TV_COLORS.red}66`,
+          })),
+        );
+      }
+      updateEMAs();
+      updateRSI();
+      updateMACD();
+
+      // Restore viewport: shift logical range by the prepended count so the
+      // user keeps seeing the same candles, but can now scroll further left.
+      if (chart && prevLogical) {
+        const shift = newCandles.length;
+        requestAnimationFrame(() => {
+          chart.timeScale().setVisibleLogicalRange({
+            from: prevLogical.from + shift,
+            to: prevLogical.to + shift,
+          });
+        });
+      }
+      // If we got fewer than 1000, there's no more history
+      if (older.length < 1000) {
+        hasMoreHistoryRef.current = false;
+      }
+    } catch (e) {
+      console.error("Failed to load older candles:", e);
+    } finally {
+      isFetchingMoreRef.current = false;
+    }
+  }
+
   // Load historical data + subscribe live
   useEffect(() => {
     let unsub: (() => void) | null = null;
     let cancelled = false;
+    // Reset lazy-load state on symbol/timeframe change
+    isFetchingMoreRef.current = false;
+    hasMoreHistoryRef.current = true;
 
     async function load() {
       try {
@@ -783,6 +884,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
+      <PaperTradingOverlay livePrice={lastPrice?.value ?? null} />
       {measureRender}
 
       {/* Top-left of main pane: symbol info + OHLC + Volume pill + EMA pills */}

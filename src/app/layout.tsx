@@ -16,9 +16,9 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TradingView Gratis — Crypto charts open source",
+  title: "Trading Pro · Panel de Criptomonedas",
   description:
-    "Plataforma de charts crypto en vivo. Alternativa gratis a TradingView. Powered by Binance + lightweight-charts.",
+    "Panel profesional de trading de criptomonedas con gráficos de velas en tiempo real.",
 };
 
 export default function RootLayout({
@@ -31,7 +31,7 @@ export default function RootLayout({
       lang="es"
       className={`dark ${inter.variable} ${jetbrains.variable} h-full antialiased`}
     >
-      <body className="h-full overflow-hidden bg-tv-bg text-tv-text">
+      <body className="h-full overflow-hidden bg-background text-foreground">
         <TooltipProvider delay={150}>{children}</TooltipProvider>
       </body>
     </html>

@@ -7,15 +7,16 @@ import { BottomPanel } from "@/components/layout/BottomPanel";
 import { PriceChart } from "@/components/chart/PriceChart";
 import { IndicatorSettingsDialog } from "@/components/chart/IndicatorSettingsDialog";
 import { useChartStore } from "@/lib/store/chart-store";
+import { ToastContainer } from "@/components/papertrading/ToastContainer";
 
 export default function HomePage() {
   const symbol = useChartStore((s) => s.symbol);
   const timeframe = useChartStore((s) => s.timeframe);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-tv-bg">
+    <div className="dark h-screen flex flex-col bg-background text-foreground">
       <Header />
-      <div className="flex min-h-0 flex-1">
+      <div className="flex-1 flex min-h-0">
         <LeftSidebar />
         <main className="relative flex min-h-0 flex-1 flex-col">
           <div className="min-h-0 flex-1">
@@ -26,6 +27,7 @@ export default function HomePage() {
       </div>
       <BottomPanel />
       <IndicatorSettingsDialog />
+      <ToastContainer />
     </div>
   );
 }

@@ -1,6 +1,9 @@
 "use client";
 
-import { MousePointer2, Minus, Ruler, Trash2, Lock } from "lucide-react";
+import {
+  MousePointer2, TrendingUp, Minus, Ruler, Type, Shapes,
+  Pencil, Eraser, Magnet, Lock, Eye, Trash2, ZoomIn,
+} from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useChartStore, type DrawingTool } from "@/lib/store/chart-store";
 import { cn } from "@/lib/utils";
@@ -28,10 +31,19 @@ const TOOLS: ToolDef[] = [
   },
 ];
 
-const LOCKED = [
-  { label: "Línea de tendencia" },
-  { label: "Fibonacci" },
-  { label: "Texto" },
+const LOCKED_TOOLS = [
+  { icon: TrendingUp, label: "Línea de tendencia" },
+  { icon: Shapes, label: "Patrones" },
+  { icon: Pencil, label: "Dibujo libre" },
+  { icon: Type, label: "Texto" },
+  { icon: ZoomIn, label: "Zoom" },
+  { icon: Magnet, label: "Imán" },
+];
+
+const FOOTER_TOOLS = [
+  { icon: Lock, label: "Bloquear" },
+  { icon: Eye, label: "Ocultar" },
+  { icon: Eraser, label: "Borrar" },
 ];
 
 export function LeftSidebar() {
@@ -41,7 +53,7 @@ export function LeftSidebar() {
   const symbol = useChartStore((s) => s.symbol);
 
   return (
-    <aside className="flex w-11 flex-col items-center gap-0.5 border-r border-tv-border bg-tv-panel py-1.5">
+    <aside className="w-11 bg-panel border-r border-border flex flex-col items-center py-1.5 shrink-0">
       {TOOLS.map((t) => {
         const Icon = t.icon;
         const active = tool === t.key;
@@ -51,18 +63,18 @@ export function LeftSidebar() {
               onClick={() => setTool(t.key)}
               aria-label={t.label}
               className={cn(
-                "flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-tv-panel-hover",
+                "w-8 h-8 my-0.5 rounded flex items-center justify-center transition",
                 active
-                  ? "bg-tv-blue/15 text-tv-blue"
-                  : "text-tv-text-muted hover:text-tv-text",
+                  ? "bg-accent text-primary"
+                  : "text-muted-foreground hover:bg-panel-hover hover:text-foreground",
               )}
             >
-              <Icon className="h-4 w-4" />
+              <Icon className="w-[18px] h-[18px]" strokeWidth={1.6} />
             </TooltipTrigger>
             <TooltipContent side="right" className="text-xs">
               <div className="font-medium">{t.label}</div>
               {t.hint && (
-                <div className="mt-0.5 text-[10px] text-tv-text-muted">{t.hint}</div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground">{t.hint}</div>
               )}
             </TooltipContent>
           </Tooltip>
@@ -72,38 +84,54 @@ export function LeftSidebar() {
       <Tooltip>
         <TooltipTrigger
           onClick={() => clearPriceLines(symbol)}
-          aria-label="Borrar dibujos"
-          className="flex h-8 w-8 items-center justify-center rounded text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-red"
+          aria-label="Eliminar todo"
+          className="w-8 h-8 my-0.5 rounded flex items-center justify-center text-muted-foreground hover:bg-panel-hover hover:text-bear transition"
         >
-          <Trash2 className="h-4 w-4" />
+          <Trash2 className="w-[18px] h-[18px]" strokeWidth={1.6} />
         </TooltipTrigger>
         <TooltipContent side="right" className="text-xs">
-          <div className="font-medium">Borrar dibujos</div>
-          <div className="mt-0.5 text-[10px] text-tv-text-muted">
+          <div className="font-medium">Eliminar dibujos</div>
+          <div className="mt-0.5 text-[10px] text-muted-foreground">
             Limpia las líneas de este símbolo
           </div>
         </TooltipContent>
       </Tooltip>
 
-      <div className="my-1 h-px w-6 bg-tv-border" />
+      <div className="my-1 h-px w-6 bg-border" />
 
-      {LOCKED.map((t) => (
-        <Tooltip key={t.label}>
-          <TooltipTrigger
-            disabled
-            aria-label={t.label}
-            className="flex h-8 w-8 cursor-not-allowed items-center justify-center rounded text-tv-text-dim opacity-40"
+      {LOCKED_TOOLS.map((t) => {
+        const Icon = t.icon;
+        return (
+          <Tooltip key={t.label}>
+            <TooltipTrigger
+              disabled
+              aria-label={t.label}
+              className="w-8 h-8 my-0.5 rounded flex items-center justify-center text-muted-foreground opacity-40 cursor-not-allowed"
+            >
+              <Icon className="w-[18px] h-[18px]" strokeWidth={1.6} />
+            </TooltipTrigger>
+            <TooltipContent side="right" className="text-xs">
+              <div className="font-medium">{t.label}</div>
+              <div className="mt-0.5 text-[10px] text-yellow-400">Próximamente</div>
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+
+      <div className="flex-1" />
+
+      {FOOTER_TOOLS.map((t) => {
+        const Icon = t.icon;
+        return (
+          <button
+            key={t.label}
+            title={t.label}
+            className="w-8 h-8 my-0.5 rounded flex items-center justify-center text-muted-foreground hover:bg-panel-hover hover:text-foreground transition"
           >
-            <Lock className="h-3.5 w-3.5" />
-          </TooltipTrigger>
-          <TooltipContent side="right" className="text-xs">
-            <div className="font-medium">{t.label}</div>
-            <div className="mt-0.5 text-[10px] text-tv-yellow">
-              Próximamente · video 3
-            </div>
-          </TooltipContent>
-        </Tooltip>
-      ))}
+            <Icon className="w-[18px] h-[18px]" strokeWidth={1.6} />
+          </button>
+        );
+      })}
     </aside>
   );
 }

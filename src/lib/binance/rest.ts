@@ -22,6 +22,31 @@ export async function fetchKlines(
   }));
 }
 
+/**
+ * Fetch historical klines BEFORE a given timestamp (for lazy-loading older candles).
+ * `endTime` is in milliseconds — Binance returns candles with openTime < endTime.
+ */
+export async function fetchKlinesBefore(
+  symbol: string,
+  interval: Timeframe,
+  endTimeMs: number,
+  limit = 1000,
+): Promise<Candle[]> {
+  const url = `${BASE}/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&endTime=${endTimeMs - 1}&limit=${limit}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`klines ${res.status}`);
+  const data = (await res.json()) as unknown[][];
+  return data.map((k) => ({
+    time: Math.floor((k[0] as number) / 1000),
+    open: parseFloat(k[1] as string),
+    high: parseFloat(k[2] as string),
+    low: parseFloat(k[3] as string),
+    close: parseFloat(k[4] as string),
+    volume: parseFloat(k[5] as string),
+    isFinal: true,
+  }));
+}
+
 export async function fetchTicker24h(symbol: string): Promise<Ticker24h> {
   const url = `${BASE}/ticker/24hr?symbol=${symbol.toUpperCase()}`;
   const res = await fetch(url, { cache: "no-store" });
