@@ -63,6 +63,15 @@ export const DEFAULT_WATCHLIST = [
   "MATICUSDT",
 ];
 
+export type PanelKey = "paperTrading" | "opportunities" | "watchlist";
+
+export interface PanelState {
+  visible: boolean;
+  minimized: boolean;
+  x: number;
+  y: number;
+}
+
 interface ChartState {
   symbol: string;
   timeframe: Timeframe;
@@ -73,6 +82,9 @@ interface ChartState {
   /** Periods and parameters for each indicator */
   config: IndicatorConfig;
   watchlist: string[];
+
+  // Panel visibility & position (persisted)
+  panels: Record<PanelKey, PanelState>;
 
   // Ephemeral UI state (not persisted)
   tool: DrawingTool;
@@ -98,6 +110,9 @@ interface ChartState {
   setSymbolDialogOpen: (v: boolean) => void;
   setSettingsTarget: (k: IndicatorKey | null) => void;
   setSelectedScore: (s: OpportunityScore | null) => void;
+  togglePanelVisible: (key: PanelKey) => void;
+  togglePanelMinimized: (key: PanelKey) => void;
+  setPanelPosition: (key: PanelKey, x: number, y: number) => void;
 }
 
 export const useChartStore = create<ChartState>()(
@@ -123,6 +138,11 @@ export const useChartStore = create<ChartState>()(
       },
       config: { ...DEFAULT_CONFIG },
       watchlist: DEFAULT_WATCHLIST,
+      panels: {
+        paperTrading: { visible: true, minimized: false, x: -1, y: -1 },
+        opportunities: { visible: true, minimized: false, x: 0, y: 0 },
+        watchlist: { visible: false, minimized: false, x: 0, y: 0 },
+      },
       tool: "cursor",
       priceLines: [],
       symbolDialogOpen: false,
@@ -182,6 +202,27 @@ export const useChartStore = create<ChartState>()(
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
       setSettingsTarget: (settingsTarget) => set({ settingsTarget }),
       setSelectedScore: (selectedScore) => set({ selectedScore }),
+      togglePanelVisible: (key) =>
+        set((s) => ({
+          panels: {
+            ...s.panels,
+            [key]: { ...s.panels[key], visible: !s.panels[key].visible },
+          },
+        })),
+      togglePanelMinimized: (key) =>
+        set((s) => ({
+          panels: {
+            ...s.panels,
+            [key]: { ...s.panels[key], minimized: !s.panels[key].minimized },
+          },
+        })),
+      setPanelPosition: (key, x, y) =>
+        set((s) => ({
+          panels: {
+            ...s.panels,
+            [key]: { ...s.panels[key], x, y },
+          },
+        })),
     }),
     {
       name: "tv-gratis-chart-state",
@@ -192,6 +233,7 @@ export const useChartStore = create<ChartState>()(
         hidden: s.hidden,
         config: s.config,
         watchlist: s.watchlist,
+        panels: s.panels,
       }),
     },
   ),

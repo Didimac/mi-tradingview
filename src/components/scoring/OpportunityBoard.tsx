@@ -9,16 +9,23 @@ import {
   type OpportunityScore,
   type BtcRegime,
 } from "@/lib/scoring/opportunityScorer";
-import { sendSignalAlert } from "@/lib/telegram/telegramNotifier";
+import {
+  registerOpportunity,
+  updateScore,
+  startOpportunityWatcher,
+  canSendPhase1,
+  getActiveOpportunity,
+} from "@/lib/telegram/opportunityWatcher";
 import { useChartStore } from "@/lib/store/chart-store";
 import { usePaperTrading } from "@/lib/papertrading/paperTradingEngine";
 import { cn } from "@/lib/utils";
 import { formatPrice } from "@/lib/format";
-import { TrendingUp, TrendingDown, Minus, RefreshCw, BarChart3 } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, RefreshCw, BarChart3, ChevronUp, ChevronDown, Eye } from "lucide-react";
+
+const SCORE_CANCEL_THRESHOLD = 40;
 
 const PAIRS = [
-  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-  "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TONUSDT",
+  "BTCUSDT", "SOLUSDT", "BNBUSDT",
 ];
 
 export type { OpportunityScore };
@@ -47,7 +54,7 @@ function ScoreCell({ value }: { value: number }) {
     <span
       className={cn(
         "text-[10px] font-mono font-bold tabular-nums",
-        value >= 70 ? "text-bull" : value >= 50 ? "text-yellow-500" : "text-muted-foreground/50",
+        value >= 30 ? "text-bull" : value >= 15 ? "text-yellow-500" : "text-muted-foreground/50",
       )}
     >
       {value}
@@ -60,10 +67,14 @@ export function useOpportunityScores() {
   const [regime, setRegime] = useState<BtcRegime>("BULL");
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const alertedRef = useRef<Set<string>>(new Set());
   const prevHighRef = useRef<Set<string>>(new Set());
   const addToast = usePaperTrading((s) => s.addToast);
   const capital = usePaperTrading((s) => s.capital);
+
+  // Start watcher on mount
+  useEffect(() => {
+    startOpportunityWatcher();
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -94,13 +105,17 @@ export function useOpportunityScores() {
           }
         }
 
-        if (isAlertEligible(r) && !alertedRef.current.has(r.symbol)) {
-          alertedRef.current.add(r.symbol);
-          sendSignalAlert(r);
+        // Phase 1: register opportunity when score >= 70 and eligible
+        if (isAlertEligible(r) && canSendPhase1(r.symbol)) {
+          registerOpportunity(r);
         }
 
-        if (r.score < 50 && alertedRef.current.has(r.symbol)) {
-          alertedRef.current.delete(r.symbol);
+        // Cancel if score dropped below 60 on an active opportunity
+        if (r.score < SCORE_CANCEL_THRESHOLD) {
+          const active = getActiveOpportunity(r.symbol);
+          if (active) {
+            updateScore(r.symbol, r.score);
+          }
         }
       }
       prevHighRef.current = currentHigh;
@@ -123,6 +138,8 @@ export function OpportunityBoard() {
   const setSymbol = useChartStore((s) => s.setSymbol);
   const currentSymbol = useChartStore((s) => s.symbol);
   const { scores, regime, loading, lastUpdate, refresh } = useOpportunityScores();
+  const panelState = useChartStore((s) => s.panels.opportunities);
+  const toggleMinimized = useChartStore((s) => s.togglePanelMinimized);
 
   const setSelectedScore = useChartStore((s) => s.setSelectedScore);
 
@@ -130,6 +147,8 @@ export function OpportunityBoard() {
     setSymbol(s.symbol);
     setSelectedScore(s);
   };
+
+  if (!panelState.visible) return null;
 
   return (
     <div className="flex flex-col h-full bg-panel border-t border-border">
@@ -164,23 +183,34 @@ export function OpportunityBoard() {
           >
             <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
           </button>
+          <button
+            onClick={() => toggleMinimized("opportunities")}
+            className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+            title={panelState.minimized ? "Expandir" : "Colapsar"}
+          >
+            {panelState.minimized ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          </button>
         </div>
       </div>
 
       {/* Table header */}
-      <div className="grid grid-cols-[60px_40px_20px_30px_30px_55px_55px_55px_55px] gap-0.5 px-2 py-1 text-[8px] uppercase tracking-wider text-muted-foreground/50 border-b border-border/20">
+      {!panelState.minimized && (
+      <div className="grid grid-cols-[60px_40px_20px_28px_28px_28px_55px_55px_55px_55px] gap-0.5 px-2 py-1 text-[8px] uppercase tracking-wider text-muted-foreground/50 border-b border-border/20">
         <span>Par</span>
         <span className="text-right">Score</span>
         <span className="text-center">Dir</span>
-        <span className="text-center">1H</span>
-        <span className="text-center">4H</span>
+        <span className="text-center">FR</span>
+        <span className="text-center">Div</span>
+        <span className="text-center">VW</span>
         <span className="text-right">Lotaje</span>
         <span className="text-right">SL</span>
         <span className="text-right">TP1</span>
         <span className="text-right">TP2</span>
       </div>
+      )}
 
       {/* Rows */}
+      {!panelState.minimized && (
       <div className="flex-1 overflow-y-auto min-h-0">
         {scores.length === 0 && (
           <div className="flex items-center justify-center h-full">
@@ -194,13 +224,16 @@ export function OpportunityBoard() {
             key={s.symbol}
             onClick={() => handleRowClick(s)}
             className={cn(
-              "grid grid-cols-[60px_40px_20px_30px_30px_55px_55px_55px_55px] gap-0.5 w-full px-2 py-1 items-center text-left transition-colors hover:bg-border/20",
+              "grid grid-cols-[60px_40px_20px_28px_28px_28px_55px_55px_55px_55px] gap-0.5 w-full px-2 py-1 items-center text-left transition-colors hover:bg-border/20",
               s.symbol === currentSymbol && "bg-border/30",
             )}
           >
             <div className="flex flex-col gap-0.5">
-              <span className="text-[10px] font-semibold text-foreground">
+              <span className="text-[10px] font-semibold text-foreground flex items-center gap-0.5">
                 {s.symbol.replace("USDT", "")}
+                {getActiveOpportunity(s.symbol) && (
+                  <Eye size={8} className="text-primary animate-pulse" />
+                )}
               </span>
               <ScoreBar score={s.score} />
             </div>
@@ -215,8 +248,9 @@ export function OpportunityBoard() {
             <span className="flex justify-center">
               <DirIcon dir={s.direction} />
             </span>
-            <span className="flex justify-center"><ScoreCell value={s.score1H} /></span>
-            <span className="flex justify-center"><ScoreCell value={s.score4H} /></span>
+            <span className="flex justify-center"><ScoreCell value={s.components.fundingRate} /></span>
+            <span className="flex justify-center"><ScoreCell value={s.components.rsiDivergence} /></span>
+            <span className="flex justify-center"><ScoreCell value={s.components.vwapWeekly} /></span>
             <span className="text-right text-[9px] font-mono text-muted-foreground tabular-nums">
               {s.positionUSDT > 0 ? `$${s.positionUSDT.toFixed(0)}` : "–"}
             </span>
@@ -232,6 +266,7 @@ export function OpportunityBoard() {
           </button>
         ))}
       </div>
+      )}
     </div>
   );
 }

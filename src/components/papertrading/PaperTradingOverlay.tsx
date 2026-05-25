@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import {
   usePaperTrading,
   startPriceMonitor,
@@ -13,6 +13,9 @@ import {
   Wallet,
   RotateCcw,
   CircleDot,
+  X,
+  Minus,
+  GripHorizontal,
 } from "lucide-react";
 
 export function PaperTradingOverlay({ livePrice }: { livePrice: number | null }) {
@@ -23,6 +26,50 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
   const reset = usePaperTrading((s) => s.reset);
   const openTrade = usePaperTrading((s) => s.openTrade);
   const chartSymbol = useChartStore((s) => s.symbol);
+  const panelState = useChartStore((s) => s.panels.paperTrading);
+  const toggleVisible = useChartStore((s) => s.togglePanelVisible);
+  const toggleMinimized = useChartStore((s) => s.togglePanelMinimized);
+  const setPanelPosition = useChartStore((s) => s.setPanelPosition);
+
+  // Drag logic
+  const dragRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+  const offset = useRef({ x: 0, y: 0 });
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!dragRef.current) return;
+    dragging.current = true;
+    const rect = dragRef.current.getBoundingClientRect();
+    offset.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    e.preventDefault();
+  }, []);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragging.current) return;
+      const x = e.clientX - offset.current.x;
+      const y = e.clientY - offset.current.y;
+      if (dragRef.current) {
+        dragRef.current.style.left = `${x}px`;
+        dragRef.current.style.top = `${y}px`;
+        dragRef.current.style.right = "auto";
+      }
+    };
+    const onMouseUp = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      if (dragRef.current) {
+        const rect = dragRef.current.getBoundingClientRect();
+        setPanelPosition("paperTrading", rect.left, rect.top);
+      }
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [setPanelPosition]);
 
   useEffect(() => {
     startPriceMonitor();
@@ -73,127 +120,159 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
   const wins = history.filter((t) => t.pnl > 0).length;
   const winRate = history.length > 0 ? (wins / history.length) * 100 : 0;
 
+  if (!panelState.visible) return null;
+
+  const posStyle: React.CSSProperties =
+    panelState.x >= 0 && panelState.y >= 0
+      ? { left: panelState.x, top: panelState.y, right: "auto" }
+      : { top: 12, right: 12 };
+
   return (
-    <div className="absolute top-3 right-3 z-20 w-[220px]">
+    <div ref={dragRef} className="absolute z-20 w-[220px]" style={posStyle}>
       <div className="rounded-xl bg-panel/90 backdrop-blur-md border border-border/40 shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-border/30">
+        <div
+          className="flex items-center justify-between px-3 py-2 border-b border-border/30 cursor-grab active:cursor-grabbing select-none"
+          onMouseDown={onMouseDown}
+        >
           <div className="flex items-center gap-1.5">
+            <GripHorizontal size={10} className="text-muted-foreground/40" />
             <Wallet size={12} className="text-primary" />
             <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
               Paper Trading
             </span>
           </div>
-          <button
-            onClick={reset}
-            title="Reset"
-            className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-          >
-            <RotateCcw size={11} />
-          </button>
-        </div>
-
-        {/* Capital */}
-        <div className="px-3 py-2 border-b border-border/20">
-          <div className="flex items-baseline justify-between">
-            <span className="text-xs text-muted-foreground">Capital</span>
-            <span className="text-sm font-mono font-semibold text-foreground">
-              ${formatPrice(capital)}
-            </span>
-          </div>
-          <div className="flex items-baseline justify-between mt-0.5">
-            <span className="text-[10px] text-muted-foreground/70">Retorno</span>
-            <span
-              className={`text-[11px] font-mono font-medium ${
-                totalReturn >= 0 ? "text-bull" : "text-bear"
-              }`}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={reset}
+              title="Reset"
+              className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
             >
-              {formatPct(totalReturn)}
-            </span>
+              <RotateCcw size={11} />
+            </button>
+            <button
+              onClick={() => toggleMinimized("paperTrading")}
+              title="Minimizar"
+              className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+            >
+              <Minus size={11} />
+            </button>
+            <button
+              onClick={() => toggleVisible("paperTrading")}
+              title="Cerrar"
+              className="text-muted-foreground/50 hover:text-bear transition-colors"
+            >
+              <X size={11} />
+            </button>
           </div>
-          {history.length > 0 && (
-            <div className="flex items-baseline justify-between mt-0.5">
-              <span className="text-[10px] text-muted-foreground/70">
-                {history.length} trades
-              </span>
-              <span className="text-[10px] text-muted-foreground/70">
-                WR {winRate.toFixed(0)}%
-              </span>
-            </div>
-          )}
         </div>
 
-        {/* Open position */}
-        {showPosition && (
-          <div className="px-3 py-2 border-b border-border/20">
-            <div className="flex items-center gap-1.5 mb-1.5">
-              <CircleDot size={10} className="text-primary animate-pulse" />
-              <span
-                className={`text-[11px] font-bold ${
-                  position.side === "long" ? "text-bull" : "text-bear"
-                }`}
-              >
-                {position.side === "long" ? (
-                  <TrendingUp size={10} className="inline mr-1" />
-                ) : (
-                  <TrendingDown size={10} className="inline mr-1" />
-                )}
-                {position.side.toUpperCase()} {position.symbol.replace("USDT", "")}
-              </span>
+        {/* Body — hidden when minimized */}
+        {!panelState.minimized && (
+          <>
+            {/* Capital */}
+            <div className="px-3 py-2 border-b border-border/20">
+              <div className="flex items-baseline justify-between">
+                <span className="text-xs text-muted-foreground">Capital</span>
+                <span className="text-sm font-mono font-semibold text-foreground">
+                  ${formatPrice(capital)}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between mt-0.5">
+                <span className="text-[10px] text-muted-foreground/70">Retorno</span>
+                <span
+                  className={`text-[11px] font-mono font-medium ${
+                    totalReturn >= 0 ? "text-bull" : "text-bear"
+                  }`}
+                >
+                  {formatPct(totalReturn)}
+                </span>
+              </div>
+              {history.length > 0 && (
+                <div className="flex items-baseline justify-between mt-0.5">
+                  <span className="text-[10px] text-muted-foreground/70">
+                    {history.length} trades
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/70">
+                    WR {winRate.toFixed(0)}%
+                  </span>
+                </div>
+              )}
             </div>
 
-            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
-              <span className="text-muted-foreground">Entrada</span>
-              <span className="text-right font-mono text-foreground">
-                {formatPrice(position.entryPrice)}
-              </span>
-              <span className="text-muted-foreground">SL</span>
-              <span className="text-right font-mono text-bear">
-                {formatPrice(position.sl)}
-              </span>
-              <span className="text-muted-foreground">TP</span>
-              <span className="text-right font-mono text-bull">
-                {formatPrice(position.tp)}
-              </span>
-              <span className="text-muted-foreground">P&L</span>
-              <span
-                className={`text-right font-mono font-semibold ${
-                  unrealizedPnl >= 0 ? "text-bull" : "text-bear"
-                }`}
-              >
-                {unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toFixed(2)} ({formatPct(unrealizedPct)})
-              </span>
-            </div>
-          </div>
-        )}
+            {/* Open position */}
+            {showPosition && (
+              <div className="px-3 py-2 border-b border-border/20">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <CircleDot size={10} className="text-primary animate-pulse" />
+                  <span
+                    className={`text-[11px] font-bold ${
+                      position.side === "long" ? "text-bull" : "text-bear"
+                    }`}
+                  >
+                    {position.side === "long" ? (
+                      <TrendingUp size={10} className="inline mr-1" />
+                    ) : (
+                      <TrendingDown size={10} className="inline mr-1" />
+                    )}
+                    {position.side.toUpperCase()} {position.symbol.replace("USDT", "")}
+                  </span>
+                </div>
 
-        {/* No position — show last trade */}
-        {!position && lastTrade && (
-          <div className="px-3 py-2">
-            <span className="text-[10px] text-muted-foreground/60">Ultimo trade:</span>
-            <div className="flex items-center justify-between mt-0.5">
-              <span className="text-[10px] text-muted-foreground">
-                {lastTrade.side.toUpperCase()} {lastTrade.symbol.replace("USDT", "")}
-              </span>
-              <span
-                className={`text-[11px] font-mono font-semibold ${
-                  lastTrade.pnl >= 0 ? "text-bull" : "text-bear"
-                }`}
-              >
-                {lastTrade.pnl >= 0 ? "+" : ""}${lastTrade.pnl.toFixed(2)}
-              </span>
-            </div>
-            <span className="text-[9px] text-muted-foreground/50">{lastTrade.exitReason}</span>
-          </div>
-        )}
+                <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+                  <span className="text-muted-foreground">Entrada</span>
+                  <span className="text-right font-mono text-foreground">
+                    {formatPrice(position.entryPrice)}
+                  </span>
+                  <span className="text-muted-foreground">SL</span>
+                  <span className="text-right font-mono text-bear">
+                    {formatPrice(position.sl)}
+                  </span>
+                  <span className="text-muted-foreground">TP</span>
+                  <span className="text-right font-mono text-bull">
+                    {formatPrice(position.tp)}
+                  </span>
+                  <span className="text-muted-foreground">P&L</span>
+                  <span
+                    className={`text-right font-mono font-semibold ${
+                      unrealizedPnl >= 0 ? "text-bull" : "text-bear"
+                    }`}
+                  >
+                    {unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toFixed(2)} ({formatPct(unrealizedPct)})
+                  </span>
+                </div>
+              </div>
+            )}
 
-        {/* Empty state */}
-        {!position && !lastTrade && (
-          <div className="px-3 py-3 text-center">
-            <span className="text-[10px] text-muted-foreground/50">
-              Sin trades aun. Usa "Simular entrada" en un par con senal.
-            </span>
-          </div>
+            {/* No position — show last trade */}
+            {!position && lastTrade && (
+              <div className="px-3 py-2">
+                <span className="text-[10px] text-muted-foreground/60">Ultimo trade:</span>
+                <div className="flex items-center justify-between mt-0.5">
+                  <span className="text-[10px] text-muted-foreground">
+                    {lastTrade.side.toUpperCase()} {lastTrade.symbol.replace("USDT", "")}
+                  </span>
+                  <span
+                    className={`text-[11px] font-mono font-semibold ${
+                      lastTrade.pnl >= 0 ? "text-bull" : "text-bear"
+                    }`}
+                  >
+                    {lastTrade.pnl >= 0 ? "+" : ""}${lastTrade.pnl.toFixed(2)}
+                  </span>
+                </div>
+                <span className="text-[9px] text-muted-foreground/50">{lastTrade.exitReason}</span>
+              </div>
+            )}
+
+            {/* Empty state */}
+            {!position && !lastTrade && (
+              <div className="px-3 py-3 text-center">
+                <span className="text-[10px] text-muted-foreground/50">
+                  Sin trades aun. Usa "Simular entrada" en un par con senal.
+                </span>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

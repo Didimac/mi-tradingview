@@ -72,13 +72,13 @@ export async function POST(request: Request) {
     if (elapsed > EXPIRY_MINUTES) {
       await tgApi("answerCallbackQuery", {
         callback_query_id: callbackId,
-        text: "Senal expirada (mas de 30 min)",
+        text: "Orden expirada sin confirmar",
         show_alert: true,
       });
       await tgApi("editMessageText", {
         chat_id: chatId,
         message_id: messageId,
-        text: originalText + "\n\n\u{23F0} <b>Senal expirada</b>",
+        text: `\u{23F0} <b>Orden expirada sin confirmar \u{2014} ${sym}</b>`,
         parse_mode: "HTML",
       });
       return NextResponse.json({ ok: true });

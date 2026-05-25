@@ -1,9 +1,11 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import { useBacktest } from "@/hooks/useBacktest";
 import type { StrategyName, StrategyParams } from "@/lib/backtest/backtest-engine";
-import { DEFAULT_PARAMS } from "@/lib/backtest/backtest-engine";
+import { DEFAULT_PARAMS, loadCandles } from "@/lib/backtest/backtest-engine";
 import type { Timeframe } from "@/lib/binance/types";
+import type { Candle } from "@/lib/binance/types";
 import { formatPrice, formatPct, formatVolume } from "@/lib/format";
 import {
   LineChart,
@@ -30,6 +32,12 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import Link from "next/link";
+import {
+  type TwoPhaseResult,
+  type TwoPhaseConfig,
+  DEFAULT_TWO_PHASE_CONFIG,
+  runTwoPhaseBacktest,
+} from "@/lib/backtest/strategies/twoPhaseScorer";
 
 /* ------------------------------------------------------------------ */
 /*  Strategy labels and timeframe options                              */
@@ -43,6 +51,7 @@ const STRATEGY_OPTIONS: { value: StrategyName; label: string; desc: string }[] =
   { value: "crypto_pulse", label: "Crypto Pulse (hibrido 4H)", desc: "Tendencia + rebote con ATR, trailing stop y regimen adaptativo" },
   { value: "crypto_pulse_v2", label: "Crypto Pulse v2 (1D)", desc: "v2: ADX filter, RSI ampliado, trailing mejorado, slippage+comision" },
   { value: "pulse_scalper_1h", label: "Pulse Scalper 1H", desc: "Scalper intradía: EMA8/21, RSI9, VWAP, filtro sesion, timeout 8 bars" },
+  { value: "two_phase_scorer", label: "Two-Phase Scorer (2 años 1H)", desc: "Sistema de alertas en 2 fases: oportunidad → entrada ideal. 10 pares, capital compuesto, max 3 posiciones" },
 ];
 
 const TIMEFRAMES: { value: Timeframe; label: string }[] = [
@@ -264,12 +273,148 @@ function StrategyParamsEditor({
         </div>
       );
     }
+    case "two_phase_scorer": {
+      const p = params as StrategyParams["two_phase_scorer"];
+      return (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-3">
+            <ParamInput label="Score Min" value={p.scoreThreshold} min={50} max={100} onChange={(v) => onChange({ ...p, scoreThreshold: v })} />
+            <ParamInput label="Cancel <" value={p.scoreCancelThreshold} min={30} max={70} onChange={(v) => onChange({ ...p, scoreCancelThreshold: v })} />
+            <ParamInput label="Riesgo %" value={p.riskPerTrade * 100} min={0.5} max={5} step={0.1} onChange={(v) => onChange({ ...p, riskPerTrade: v / 100 })} />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <ParamInput label="ATR SL x" value={p.atrSlMult} min={0.5} max={3} step={0.1} onChange={(v) => onChange({ ...p, atrSlMult: v })} />
+            <ParamInput label="ATR TP1 x" value={p.atrTp1Mult} min={0.5} max={5} step={0.1} onChange={(v) => onChange({ ...p, atrTp1Mult: v })} />
+            <ParamInput label="ATR TP2 x" value={p.atrTp2Mult} min={1} max={8} step={0.1} onChange={(v) => onChange({ ...p, atrTp2Mult: v })} />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <ParamInput label="Expiry (bars)" value={p.expiryBars} min={1} max={12} onChange={(v) => onChange({ ...p, expiryBars: v })} />
+            <ParamInput label="Timeout (bars)" value={p.timeoutBars} min={12} max={96} onChange={(v) => onChange({ ...p, timeoutBars: v })} />
+            <ParamInput label="Max Posiciones" value={p.maxOpenPositions} min={1} max={10} onChange={(v) => onChange({ ...p, maxOpenPositions: v })} />
+          </div>
+          <p className="text-[10px] text-muted-foreground/60">
+            F1: score≥{p.scoreThreshold} → F2: entrada en zona ideal (±0.1%) · SL {p.atrSlMult}x / TP1 {p.atrTp1Mult}x / TP2 {p.atrTp2Mult}x ATR · TP1 cierra 50% + BE · Timeout {p.timeoutBars}h · 10 pares · Max {p.maxOpenPositions} posiciones abiertas
+          </p>
+        </div>
+      );
+    }
   }
 }
 
 /* ------------------------------------------------------------------ */
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
+
+const TWO_PHASE_PAIRS = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+  "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TONUSDT",
+];
+
+function TwoPhaseResultsPanel({ result }: { result: TwoPhaseResult }) {
+  return (
+    <div className="space-y-6">
+      {/* Global summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <MetricCard label="Retorno Total" value={formatPct(result.totalReturnPct)} color={result.totalReturnPct >= 0 ? "text-bull" : "text-bear"} icon={result.totalReturnPct >= 0 ? TrendingUp : TrendingDown} />
+        <MetricCard label="Capital Final" value={`$${formatPrice(result.finalEquity)}`} color="text-foreground" icon={Zap} />
+        <MetricCard label="Win Rate" value={`${result.winRateGlobal.toFixed(1)}%`} color={result.winRateGlobal >= 50 ? "text-bull" : "text-bear"} icon={Target} />
+        <MetricCard label="Profit Factor" value={result.profitFactorGlobal === Infinity ? "∞" : result.profitFactorGlobal.toFixed(2)} color={result.profitFactorGlobal >= 1 ? "text-bull" : "text-bear"} />
+        <MetricCard label="Max Drawdown" value={`${result.maxDrawdownPct.toFixed(2)}%`} color="text-bear" icon={Shield} />
+        <MetricCard label="Trades/Semana" value={result.tradesPerWeek.toFixed(1)} />
+      </div>
+
+      {/* Signal flow summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 text-xs">
+        <MetricCard label="Senales F1" value={String(result.totalSignalsF1)} />
+        <MetricCard label="Entradas F2" value={String(result.totalEntriesF2)} color="text-bull" />
+        <MetricCard label="% Llego a zona" value={`${result.pctReachedZone.toFixed(1)}%`} />
+        <MetricCard label="Tiempo F1→F2" value={`${result.avgTimeF1toF2Minutes.toFixed(0)} min`} />
+        <MetricCard label="Mejor Par" value={result.bestPair} color="text-bull" />
+        <MetricCard label="Peor Par" value={result.worstPair} color="text-bear" />
+        <MetricCard label="Capital Inicio" value={`$${formatPrice(result.startEquity)}`} />
+      </div>
+
+      {/* Per-pair table */}
+      <div className="rounded-xl bg-panel/40 border border-border/30 p-4">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+          Resultados por Par
+        </h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border/30 text-muted-foreground">
+                <th className="py-2 px-2 text-left">Par</th>
+                <th className="py-2 px-2 text-right">F1</th>
+                <th className="py-2 px-2 text-right">F2</th>
+                <th className="py-2 px-2 text-right">% Zona</th>
+                <th className="py-2 px-2 text-right">TP1</th>
+                <th className="py-2 px-2 text-right">TP2</th>
+                <th className="py-2 px-2 text-right">SL</th>
+                <th className="py-2 px-2 text-right">Expir.</th>
+                <th className="py-2 px-2 text-right">Escap.</th>
+                <th className="py-2 px-2 text-right">Cancel.</th>
+                <th className="py-2 px-2 text-right">WR%</th>
+                <th className="py-2 px-2 text-right">PF</th>
+                <th className="py-2 px-2 text-right">Ret.%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.perPair.map((p) => (
+                <tr key={p.symbol} className="border-b border-border/10 hover:bg-border/5">
+                  <td className="py-1.5 px-2 font-semibold">{p.symbol.replace("USDT", "")}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{p.signalsF1}</td>
+                  <td className="py-1.5 px-2 text-right font-mono text-bull">{p.entriesF2}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{p.pctReachedZone.toFixed(0)}%</td>
+                  <td className="py-1.5 px-2 text-right font-mono text-bull">{p.tp1Count}</td>
+                  <td className="py-1.5 px-2 text-right font-mono text-bull">{p.tp2Count}</td>
+                  <td className="py-1.5 px-2 text-right font-mono text-bear">{p.slCount}</td>
+                  <td className="py-1.5 px-2 text-right font-mono text-muted-foreground">{p.expired}</td>
+                  <td className="py-1.5 px-2 text-right font-mono text-muted-foreground">{p.escaped}</td>
+                  <td className="py-1.5 px-2 text-right font-mono text-muted-foreground">{p.cancelled}</td>
+                  <td className={`py-1.5 px-2 text-right font-mono font-semibold ${p.winRate >= 50 ? "text-bull" : "text-bear"}`}>{p.winRate.toFixed(0)}%</td>
+                  <td className={`py-1.5 px-2 text-right font-mono ${p.profitFactor >= 1 ? "text-bull" : "text-bear"}`}>{p.profitFactor === Infinity ? "∞" : p.profitFactor.toFixed(2)}</td>
+                  <td className={`py-1.5 px-2 text-right font-mono font-semibold ${p.returnPct >= 0 ? "text-bull" : "text-bear"}`}>{p.returnPct >= 0 ? "+" : ""}{p.returnPct.toFixed(2)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Equity curve */}
+      {result.equityCurve.length > 0 && (
+        <div className="rounded-xl bg-panel/40 border border-border/30 p-4">
+          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+            Curva de Equity (capital compuesto)
+          </h3>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={result.equityCurve}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+              <XAxis
+                dataKey="time"
+                tickFormatter={(t: number) => new Date(t * 1000).toLocaleDateString("es-ES", { month: "short", year: "2-digit" })}
+                tick={{ fontSize: 10, fill: "#787b86" }}
+                stroke="rgba(255,255,255,0.1)"
+              />
+              <YAxis
+                tick={{ fontSize: 10, fill: "#787b86" }}
+                stroke="rgba(255,255,255,0.1)"
+                tickFormatter={(v: number) => `$${formatVolume(v)}`}
+              />
+              <Tooltip
+                contentStyle={{ background: "oklch(0.235 0.015 260)", border: "1px solid oklch(0.35 0.01 260)", borderRadius: 8, fontSize: 12 }}
+                labelFormatter={(t) => new Date(Number(t) * 1000).toLocaleDateString("es-ES")}
+                formatter={(v) => [`$${formatPrice(Number(v))}`, "Equity"]}
+              />
+              <ReferenceLine y={result.startEquity} stroke="#787b86" strokeDasharray="3 3" />
+              <Line type="monotone" dataKey="equity" stroke="#2962ff" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function BacktestPanel() {
   const {
@@ -282,6 +427,42 @@ export default function BacktestPanel() {
     result,
     metrics,
   } = useBacktest();
+
+  // Two-Phase dedicated state
+  const [tpLoading, setTpLoading] = useState(false);
+  const [tpError, setTpError] = useState<string | null>(null);
+  const [tpResult, setTpResult] = useState<TwoPhaseResult | null>(null);
+  const [tpProgress, setTpProgress] = useState("");
+
+  const runTwoPhase = useCallback(async () => {
+    setTpLoading(true);
+    setTpError(null);
+    setTpResult(null);
+
+    try {
+      const allCandles = new Map<string, Candle[]>();
+      const candleCount = 17520; // 2 years × 365 days × 24h = 17520 bars (capped by API)
+
+      for (let idx = 0; idx < TWO_PHASE_PAIRS.length; idx++) {
+        const sym = TWO_PHASE_PAIRS[idx];
+        setTpProgress(`Descargando ${sym} (${idx + 1}/${TWO_PHASE_PAIRS.length})...`);
+        const candles = await loadCandles(sym, "1h" as Timeframe, candleCount);
+        allCandles.set(sym, candles);
+      }
+
+      setTpProgress("Ejecutando backtest...");
+      const tpCfg = config.params as TwoPhaseConfig;
+      const res = runTwoPhaseBacktest(allCandles, tpCfg, config.startEquity);
+      setTpResult(res);
+      setTpProgress("");
+    } catch (err) {
+      setTpError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTpLoading(false);
+    }
+  }, [config]);
+
+  const isTwoPhase = config.strategy === "two_phase_scorer";
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -307,67 +488,92 @@ export default function BacktestPanel() {
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Mercado
             </h2>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Simbolo
-              <input
-                type="text"
-                value={config.symbol}
-                onChange={(e) => setConfig({ symbol: e.target.value.toUpperCase() })}
-                className="rounded bg-background border border-border/60 px-2 py-1.5 text-sm text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-            </label>
-            {config.strategy === "pulse_scalper_1h" && (
-              <div className="space-y-1.5">
-                <span className="text-[10px] text-muted-foreground/70">Pares recomendados:</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {["LINKUSDT", "AVAXUSDT", "SOLUSDT", "XRPUSDT"].map((p) => (
-                    <button
-                      key={p}
-                      onClick={() => setConfig({ symbol: p })}
-                      className={`text-[11px] px-2 py-0.5 rounded-md border transition-colors ${
-                        config.symbol === p
-                          ? "bg-primary/15 border-primary/50 text-primary font-medium"
-                          : "bg-background/50 border-border/40 text-muted-foreground hover:border-border/70"
-                      }`}
-                    >
-                      {p.replace("USDT", "")}
-                    </button>
-                  ))}
+            {isTwoPhase ? (
+              <>
+                <div className="text-xs text-muted-foreground space-y-2">
+                  <p className="font-medium text-foreground">10 pares en 1H (2 anos):</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {TWO_PHASE_PAIRS.map((p) => (
+                      <span key={p} className="text-[11px] px-2 py-0.5 rounded-md bg-primary/10 border border-primary/30 text-primary font-medium">
+                        {p.replace("USDT", "")}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              </div>
+                <ParamInput
+                  label="Capital Inicial (USDT)"
+                  value={config.startEquity}
+                  min={100}
+                  max={1000000}
+                  step={100}
+                  onChange={(v) => setConfig({ startEquity: v })}
+                />
+              </>
+            ) : (
+              <>
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Simbolo
+                  <input
+                    type="text"
+                    value={config.symbol}
+                    onChange={(e) => setConfig({ symbol: e.target.value.toUpperCase() })}
+                    className="rounded bg-background border border-border/60 px-2 py-1.5 text-sm text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </label>
+                {config.strategy === "pulse_scalper_1h" && (
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] text-muted-foreground/70">Pares recomendados:</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {["LINKUSDT", "AVAXUSDT", "SOLUSDT", "XRPUSDT"].map((p) => (
+                        <button
+                          key={p}
+                          onClick={() => setConfig({ symbol: p })}
+                          className={`text-[11px] px-2 py-0.5 rounded-md border transition-colors ${
+                            config.symbol === p
+                              ? "bg-primary/15 border-primary/50 text-primary font-medium"
+                              : "bg-background/50 border-border/40 text-muted-foreground hover:border-border/70"
+                          }`}
+                        >
+                          {p.replace("USDT", "")}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Temporalidad
+                  <select
+                    value={config.timeframe}
+                    onChange={(e) => setConfig({ timeframe: e.target.value as Timeframe })}
+                    className="rounded bg-background border border-border/60 px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    {TIMEFRAMES.map((tf) => (
+                      <option key={tf.value} value={tf.value}>
+                        {tf.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <ParamInput
+                    label="Capital Inicial (USDT)"
+                    value={config.startEquity}
+                    min={100}
+                    max={1000000}
+                    step={100}
+                    onChange={(v) => setConfig({ startEquity: v })}
+                  />
+                  <ParamInput
+                    label="Velas"
+                    value={config.candleCount}
+                    min={200}
+                    max={3000}
+                    step={100}
+                    onChange={(v) => setConfig({ candleCount: v })}
+                  />
+                </div>
+              </>
             )}
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Temporalidad
-              <select
-                value={config.timeframe}
-                onChange={(e) => setConfig({ timeframe: e.target.value as Timeframe })}
-                className="rounded bg-background border border-border/60 px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-              >
-                {TIMEFRAMES.map((tf) => (
-                  <option key={tf.value} value={tf.value}>
-                    {tf.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <ParamInput
-                label="Capital Inicial (USDT)"
-                value={config.startEquity}
-                min={100}
-                max={1000000}
-                step={100}
-                onChange={(v) => setConfig({ startEquity: v })}
-              />
-              <ParamInput
-                label="Velas"
-                value={config.candleCount}
-                min={200}
-                max={3000}
-                step={100}
-                onChange={(v) => setConfig({ candleCount: v })}
-              />
-            </div>
           </div>
 
           {/* Strategy */}
@@ -404,62 +610,69 @@ export default function BacktestPanel() {
               onChange={(p) => setConfig({ params: p })}
             />
 
-            <div className="border-t border-border/30 pt-4">
-              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                Gestion de Riesgo
-              </h2>
-              <div className="grid grid-cols-2 gap-3">
-                <ParamInput
-                  label="Stop-Loss %"
-                  value={config.stopLossPct}
-                  min={0}
-                  max={50}
-                  step={0.5}
-                  onChange={(v) => setConfig({ stopLossPct: v })}
-                />
-                <ParamInput
-                  label="Take-Profit %"
-                  value={config.takeProfitPct}
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  onChange={(v) => setConfig({ takeProfitPct: v })}
-                />
+            {!isTwoPhase && (
+              <div className="border-t border-border/30 pt-4">
+                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                  Gestion de Riesgo
+                </h2>
+                <div className="grid grid-cols-2 gap-3">
+                  <ParamInput
+                    label="Stop-Loss %"
+                    value={config.stopLossPct}
+                    min={0}
+                    max={50}
+                    step={0.5}
+                    onChange={(v) => setConfig({ stopLossPct: v })}
+                  />
+                  <ParamInput
+                    label="Take-Profit %"
+                    value={config.takeProfitPct}
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    onChange={(v) => setConfig({ takeProfitPct: v })}
+                  />
+                </div>
+                <p className="text-[10px] text-muted-foreground/60 mt-2">
+                  0 = desactivado
+                </p>
               </div>
-              <p className="text-[10px] text-muted-foreground/60 mt-2">
-                0 = desactivado
-              </p>
-            </div>
+            )}
 
             {/* Run Button */}
             <button
-              onClick={run}
-              disabled={loading}
+              onClick={isTwoPhase ? runTwoPhase : run}
+              disabled={isTwoPhase ? tpLoading : loading}
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground font-semibold py-2.5 text-sm transition-all hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? (
+              {(isTwoPhase ? tpLoading : loading) ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Ejecutando...
+                  {isTwoPhase && tpProgress ? tpProgress : "Ejecutando..."}
                 </>
               ) : (
                 <>
                   <Play size={16} />
-                  Ejecutar Backtest
+                  {isTwoPhase ? "Ejecutar Two-Phase (10 pares)" : "Ejecutar Backtest"}
                 </>
               )}
             </button>
 
-            {error && (
+            {(isTwoPhase ? tpError : error) && (
               <div className="rounded-lg bg-bear/10 border border-bear/30 p-3 text-xs text-bear">
-                {error}
+                {isTwoPhase ? tpError : error}
               </div>
             )}
           </div>
         </div>
 
-        {/* ---- Results ---- */}
-        {metrics && result && (
+        {/* ---- Two-Phase Results ---- */}
+        {isTwoPhase && tpResult && (
+          <TwoPhaseResultsPanel result={tpResult} />
+        )}
+
+        {/* ---- Regular Results ---- */}
+        {!isTwoPhase && metrics && result && (
           <>
             {/* Key metrics grid */}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -687,7 +900,7 @@ export default function BacktestPanel() {
         )}
 
         {/* Empty state */}
-        {!result && !loading && (
+        {!result && !tpResult && !loading && !tpLoading && (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground/60">
             <BarChart3 size={48} strokeWidth={1} />
             <p className="mt-4 text-sm">

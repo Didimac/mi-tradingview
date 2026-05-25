@@ -27,6 +27,10 @@ import {
   calcPositionScalper,
   type ScalperOpenPosition,
 } from "@/lib/backtest/strategies/pulseScalper1H";
+import {
+  type TwoPhaseConfig,
+  DEFAULT_TWO_PHASE_CONFIG,
+} from "@/lib/backtest/strategies/twoPhaseScorer";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -77,7 +81,7 @@ export interface BacktestResult {
 /*  Strategy configuration                                             */
 /* ------------------------------------------------------------------ */
 
-export type StrategyName = "ema_cross" | "rsi_ob_os" | "macd_cross" | "triple_ema" | "crypto_pulse" | "crypto_pulse_v2" | "pulse_scalper_1h";
+export type StrategyName = "ema_cross" | "rsi_ob_os" | "macd_cross" | "triple_ema" | "crypto_pulse" | "crypto_pulse_v2" | "pulse_scalper_1h" | "two_phase_scorer";
 
 export interface StrategyParams {
   ema_cross: { fastPeriod: number; slowPeriod: number };
@@ -87,6 +91,7 @@ export interface StrategyParams {
   crypto_pulse: CryptoPulseConfig;
   crypto_pulse_v2: CryptoPulseV2Config;
   pulse_scalper_1h: PulseScalperConfig;
+  two_phase_scorer: TwoPhaseConfig;
 }
 
 export interface BacktestConfig<S extends StrategyName = StrategyName> {
@@ -111,6 +116,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   crypto_pulse: { ...DEFAULT_CRYPTO_PULSE_CONFIG },
   crypto_pulse_v2: { ...DEFAULT_V2_CONFIG },
   pulse_scalper_1h: { ...DEFAULT_SCALPER_CONFIG },
+  two_phase_scorer: { ...DEFAULT_TWO_PHASE_CONFIG },
 };
 
 /* ------------------------------------------------------------------ */
@@ -360,6 +366,9 @@ function getSignals(
     case "pulse_scalper_1h":
       // Pulse Scalper 1H uses its own candle-by-candle loop (runPulseScalper1H)
       return [];
+    case "two_phase_scorer":
+      // Two-Phase Scorer uses its own multi-pair runner
+      return [];
   }
 }
 
@@ -380,6 +389,10 @@ export function runBacktest(
   }
   if (config.strategy === "pulse_scalper_1h") {
     return runPulseScalper1H(candles, config);
+  }
+  if (config.strategy === "two_phase_scorer") {
+    // Two-Phase uses its own multi-pair runner; single-pair fallback
+    return { trades: [], equity: [], signals: [], candles, finalEquity: config.startEquity, startEquity: config.startEquity };
   }
 
   const signals = getSignals(candles, config.strategy, config.params);

@@ -62,6 +62,7 @@ export function useBacktest(): UseBacktestReturn {
       ...(name === "crypto_pulse" ? { timeframe: "4h" as Timeframe } : {}),
       ...(name === "crypto_pulse_v2" ? { timeframe: "1d" as Timeframe } : {}),
       ...(name === "pulse_scalper_1h" ? { timeframe: "1h" as Timeframe, candleCount: 2000, symbol: "LINKUSDT" } : {}),
+      ...(name === "two_phase_scorer" ? { timeframe: "1h" as Timeframe, candleCount: 17520, startEquity: 1000 } : {}),
     }));
   }, []);
 
