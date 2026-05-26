@@ -7,7 +7,7 @@
  *   - lastSignalTimes (cooldown tracking)
  */
 
-import { put, list, head } from "@vercel/blob";
+import { put, list, del } from "@vercel/blob";
 
 // ─── Types ───
 
@@ -87,35 +87,22 @@ function defaultState(): TradingState {
 // ─── Blob operations ───
 
 /**
- * Find the blob URL via list(), then use head() to get a fresh downloadUrl.
- * head() returns metadata directly from the store (not CDN-cached).
+ * Load/save strategy:
+ * - Delete old blob + put new one each time (forces new URL = no CDN cache)
+ * - list() to find current blob for reading
  */
-async function findBlobUrl(): Promise<string | null> {
-  try {
-    const { blobs } = await list({ prefix: BLOB_KEY });
-    if (blobs.length > 0) return blobs[0].url;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-// In-module cache of the last written blob URL (avoids stale list() results within same instance)
-let lastPutUrl: string | null = null;
 
 export async function loadState(): Promise<TradingState> {
   try {
-    // Prefer the URL from the last put() in this instance (freshest)
-    const blobUrl = lastPutUrl ?? await findBlobUrl();
-    if (!blobUrl) return defaultState();
+    const { blobs } = await list({ prefix: BLOB_KEY });
+    if (blobs.length === 0) return defaultState();
 
-    // Use head() to get fresh downloadUrl — bypasses CDN cache
-    const blobMeta = await head(blobUrl);
-    const res = await fetch(blobMeta.downloadUrl, { cache: "no-store" });
+    // Fetch with random query param to bust any edge cache
+    const url = blobs[0].downloadUrl;
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return defaultState();
 
     const data = await res.json();
-    // Merge with defaults to handle missing fields from older versions
     return { ...defaultState(), ...data };
   } catch (e) {
     console.error("[TradingState] Failed to load:", e);
@@ -125,13 +112,17 @@ export async function loadState(): Promise<TradingState> {
 
 export async function saveState(state: TradingState): Promise<void> {
   try {
-    const blob = await put(BLOB_KEY, JSON.stringify(state), {
+    // Delete existing blob first to invalidate CDN cache
+    const { blobs } = await list({ prefix: BLOB_KEY });
+    if (blobs.length > 0) {
+      await del(blobs.map((b) => b.url));
+    }
+    // Write new blob (gets a fresh CDN entry)
+    await put(BLOB_KEY, JSON.stringify(state), {
       access: "public",
       addRandomSuffix: false,
-      cacheControlMaxAge: 60, // minimize CDN cache (min 60s)
+      cacheControlMaxAge: 60,
     });
-    // Cache URL from put() for immediate reads in same instance
-    lastPutUrl = blob.url;
   } catch (e) {
     console.error("[TradingState] Failed to save:", e);
   }
