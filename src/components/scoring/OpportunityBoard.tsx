@@ -127,7 +127,7 @@ export function useOpportunityScores() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 60 * 60 * 1000);
+    const id = setInterval(refresh, 15 * 60 * 1000); // cada 15 min
     return () => clearInterval(id);
   }, [refresh]);
 
