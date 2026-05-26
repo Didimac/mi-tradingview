@@ -7,7 +7,7 @@
  *   - lastSignalTimes (cooldown tracking)
  */
 
-import { put, head, list } from "@vercel/blob";
+import { put, list } from "@vercel/blob";
 
 // ─── Types ───
 
@@ -101,7 +101,9 @@ export async function loadState(): Promise<TradingState> {
     const url = await findBlobUrl();
     if (!url) return defaultState();
 
-    const res = await fetch(url, { cache: "no-store" });
+    // Add cache-busting param — Vercel Blob CDN caches public URLs aggressively
+    const bustUrl = `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
+    const res = await fetch(bustUrl, { cache: "no-store" });
     if (!res.ok) return defaultState();
 
     const data = await res.json();
