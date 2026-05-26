@@ -86,10 +86,15 @@ function defaultState(): TradingState {
 
 // ─── Blob operations ───
 
-async function findBlobUrl(): Promise<string | null> {
+/**
+ * Use list() to get the blob's downloadUrl — this includes an auth token
+ * that bypasses CDN caching and always returns fresh content.
+ * The public `.url` is aggressively cached by CDN and returns stale data.
+ */
+async function findBlobDownloadUrl(): Promise<string | null> {
   try {
     const { blobs } = await list({ prefix: BLOB_KEY });
-    if (blobs.length > 0) return blobs[0].url;
+    if (blobs.length > 0) return blobs[0].downloadUrl;
     return null;
   } catch {
     return null;
@@ -98,12 +103,10 @@ async function findBlobUrl(): Promise<string | null> {
 
 export async function loadState(): Promise<TradingState> {
   try {
-    const url = await findBlobUrl();
-    if (!url) return defaultState();
+    const downloadUrl = await findBlobDownloadUrl();
+    if (!downloadUrl) return defaultState();
 
-    // Add cache-busting param — Vercel Blob CDN caches public URLs aggressively
-    const bustUrl = `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
-    const res = await fetch(bustUrl, { cache: "no-store" });
+    const res = await fetch(downloadUrl, { cache: "no-store" });
     if (!res.ok) return defaultState();
 
     const data = await res.json();
