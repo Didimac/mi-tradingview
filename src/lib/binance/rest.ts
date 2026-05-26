@@ -1,6 +1,10 @@
 import type { Candle, SymbolInfo, Ticker24h, Timeframe } from "./types";
 
-const BASE = "https://api.binance.com/api/v3";
+// Use data-api.binance.vision on server (no geo restrictions) and api.binance.com on client
+const BASE =
+  typeof window === "undefined"
+    ? "https://data-api.binance.vision/api/v3"
+    : "https://api.binance.com/api/v3";
 
 export async function fetchKlines(
   symbol: string,

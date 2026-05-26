@@ -53,7 +53,11 @@ export interface SmartScoreResult {
 
 // ─── Funding Rate (Indicator 1 — 35pts) ─────────────────
 
-const FUNDING_RATE_URL = "https://fapi.binance.com/fapi/v1/fundingRate";
+// Use fapi.binance.vision on server (no geo restrictions) and fapi.binance.com on client
+const FUNDING_RATE_URL =
+  typeof window === "undefined"
+    ? "https://fapi.binance.vision/fapi/v1/fundingRate"
+    : "https://fapi.binance.com/fapi/v1/fundingRate";
 
 /**
  * Fetch latest funding rates from Binance Futures (public, no API key).
