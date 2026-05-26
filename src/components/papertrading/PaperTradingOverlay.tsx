@@ -16,7 +16,11 @@ import {
   X,
   Minus,
   GripHorizontal,
+  Bot,
+  User,
+  DollarSign,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export function PaperTradingOverlay({ livePrice }: { livePrice: number | null }) {
   const capital = usePaperTrading((s) => s.capital);
@@ -25,6 +29,9 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
   const history = usePaperTrading((s) => s.history);
   const reset = usePaperTrading((s) => s.reset);
   const openTrade = usePaperTrading((s) => s.openTrade);
+  const autoMode = usePaperTrading((s) => s.autoMode);
+  const tradingMode = usePaperTrading((s) => s.tradingMode);
+  const setAutoMode = usePaperTrading((s) => s.setAutoMode);
   const chartSymbol = useChartStore((s) => s.symbol);
   const panelState = useChartStore((s) => s.panels.paperTrading);
   const toggleVisible = useChartStore((s) => s.togglePanelVisible);
@@ -89,6 +96,7 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
               price: t.price,
               sl: t.sl,
               tp: t.tp1,
+              tp2: t.tp2 ?? t.tp1,
               reason: t.reason,
             });
           }
@@ -170,6 +178,67 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
         {/* Body — hidden when minimized */}
         {!panelState.minimized && (
           <>
+            {/* Mode toggle */}
+            <div
+              className={cn(
+                "px-3 py-1.5 border-b border-border/20 flex items-center justify-between",
+                tradingMode === "real"
+                  ? "bg-yellow-500/10"
+                  : autoMode
+                    ? "bg-bull/10"
+                    : "bg-muted/30",
+              )}
+            >
+              <div className="flex items-center gap-1.5">
+                {tradingMode === "real" ? (
+                  <>
+                    <DollarSign size={10} className="text-yellow-500" />
+                    <span className="text-[9px] font-bold text-yellow-500 uppercase tracking-wider">
+                      Real
+                    </span>
+                  </>
+                ) : autoMode ? (
+                  <>
+                    <Bot size={10} className="text-bull" />
+                    <span className="text-[9px] font-bold text-bull uppercase tracking-wider">
+                      Auto ON
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <User size={10} className="text-muted-foreground" />
+                    <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">
+                      Manual
+                    </span>
+                  </>
+                )}
+              </div>
+
+              {/* Toggle — only in paper mode */}
+              {tradingMode === "paper" && (
+                <button
+                  onClick={() => setAutoMode(!autoMode)}
+                  className={cn(
+                    "relative w-7 h-3.5 rounded-full transition-colors duration-200",
+                    autoMode ? "bg-bull" : "bg-border",
+                  )}
+                  title={autoMode ? "Desactivar modo auto" : "Activar modo auto"}
+                >
+                  <span
+                    className={cn(
+                      "absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white shadow transition-transform duration-200",
+                      autoMode ? "translate-x-3.5" : "translate-x-0.5",
+                    )}
+                  />
+                </button>
+              )}
+
+              {/* Real money mode — lock indicator */}
+              {tradingMode === "real" && (
+                <span className="text-[8px] text-yellow-500/70">Siempre manual</span>
+              )}
+            </div>
+
             {/* Capital */}
             <div className="px-3 py-2 border-b border-border/20">
               <div className="flex items-baseline justify-between">
@@ -224,13 +293,17 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
                   <span className="text-right font-mono text-foreground">
                     {formatPrice(position.entryPrice)}
                   </span>
-                  <span className="text-muted-foreground">SL</span>
+                  <span className="text-muted-foreground">SL{position.partialClosed ? " (BE)" : ""}</span>
                   <span className="text-right font-mono text-bear">
                     {formatPrice(position.sl)}
                   </span>
-                  <span className="text-muted-foreground">TP</span>
-                  <span className="text-right font-mono text-bull">
+                  <span className="text-muted-foreground">TP1{position.partialClosed ? " ✓" : ""}</span>
+                  <span className={`text-right font-mono ${position.partialClosed ? "text-muted-foreground line-through" : "text-bull"}`}>
                     {formatPrice(position.tp)}
+                  </span>
+                  <span className="text-muted-foreground">TP2</span>
+                  <span className="text-right font-mono text-bull">
+                    {formatPrice(position.tp2)}
                   </span>
                   <span className="text-muted-foreground">P&L</span>
                   <span

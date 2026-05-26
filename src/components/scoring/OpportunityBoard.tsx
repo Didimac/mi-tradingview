@@ -105,12 +105,12 @@ export function useOpportunityScores() {
           }
         }
 
-        // Phase 1: register opportunity when score >= 70 and eligible
+        // Auto paper trading: score >= 75 → auto-enter trade
         if (isAlertEligible(r) && canSendPhase1(r.symbol)) {
           registerOpportunity(r);
         }
 
-        // Cancel if score dropped below 60 on an active opportunity
+        // Log score drops for active opportunities
         if (r.score < SCORE_CANCEL_THRESHOLD) {
           const active = getActiveOpportunity(r.symbol);
           if (active) {

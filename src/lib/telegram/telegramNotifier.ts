@@ -141,6 +141,87 @@ export async function sendSignalCancelled(symbol: string, currentScore: number):
   return result.ok;
 }
 
+// ─── AUTO PAPER TRADING MESSAGES (no buttons) ───
+
+/** Phase 1 Auto: Signal detected, entering automatically */
+export async function sendAutoSignalDetected(s: OpportunityScore): Promise<boolean> {
+  const sym = s.symbol.replace("USDT", "");
+  const regimeEmoji = s.regime === "BULL" ? "\u{1F7E2}" : "\u{1F534}";
+  const slPct = pctBetween(s.entry, s.stopLoss);
+  const tp1Pct = pctBetween(s.entry, s.takeProfit1);
+  const tp2Pct = pctBetween(s.entry, s.takeProfit2);
+
+  const text = [
+    `\u{1F4CA} <b>SENAL DETECTADA — ${sym} ${s.direction}</b>`,
+    `\u{1F916} Entrando automaticamente en paper trading`,
+    ``,
+    `Score: ${s.score}/100 | BTC: ${s.regime} ${regimeEmoji}`,
+    `\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}`,
+    `Precio:       $${fmtPrice(s.entry)}`,
+    `Stop Loss:    $${fmtPrice(s.stopLoss)}  (${slPct}%)`,
+    `Take Profit 1: $${fmtPrice(s.takeProfit1)}  (+${tp1Pct}%)`,
+    `Take Profit 2: $${fmtPrice(s.takeProfit2)}  (+${tp2Pct}%)`,
+    `Lotaje:       $${Math.round(s.positionUSDT)} USDT`,
+    `\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}`,
+    `FR: ${s.smartComponents.fundingRate.points}pts | Div: ${s.smartComponents.rsiDivergence.points}pts | VWAP: ${s.smartComponents.vwapWeekly.points}pts`,
+  ].join("\n");
+
+  const result = await sendTelegram({ text });
+  return result.ok;
+}
+
+/** Phase 2 Auto: Entry executed at price */
+export async function sendAutoEntryExecuted(s: OpportunityScore, price: number): Promise<boolean> {
+  const sym = s.symbol.replace("USDT", "");
+  const text = [
+    `\u{1F3AF} <b>ENTRADA EJECUTADA — ${sym} ${s.direction}</b>`,
+    ``,
+    `Precio de entrada: $${fmtPrice(price)}`,
+    `\u{23F3} Monitoreando SL/TP via WebSocket...`,
+  ].join("\n");
+
+  const result = await sendTelegram({ text });
+  return result.ok;
+}
+
+/** Auto: TP1 partial close notification */
+export async function sendAutoPartialClose(symbol: string, pnlPct: number, capital: number): Promise<boolean> {
+  const sym = symbol.replace("USDT", "");
+  const text = [
+    `\u{1F4B0} <b>TP1 PARCIAL — ${sym}</b>`,
+    `50% cerrado | +${pnlPct.toFixed(2)}%`,
+    `SL movido a breakeven`,
+    `Capital: $${capital.toFixed(2)}`,
+  ].join("\n");
+
+  const result = await sendTelegram({ text });
+  return result.ok;
+}
+
+/** Auto: Trade fully closed (SL or TP2) */
+export async function sendAutoTradeClose(
+  symbol: string,
+  exitReason: string,
+  pnlPct: number,
+  capital: number,
+): Promise<boolean> {
+  const sym = symbol.replace("USDT", "");
+  const isWin = pnlPct >= 0;
+  const emoji = isWin ? "\u{2705}" : "\u{1F534}";
+  const label = exitReason.includes("Profit") || exitReason.includes("TP")
+    ? "TP alcanzado"
+    : "SL tocado";
+
+  const text = [
+    `${emoji} <b>${label} — ${sym}</b>`,
+    `Resultado: ${isWin ? "+" : ""}${pnlPct.toFixed(2)}%`,
+    `Capital: $${capital.toFixed(2)}`,
+  ].join("\n");
+
+  const result = await sendTelegram({ text });
+  return result.ok;
+}
+
 // Legacy alias for backward compatibility
 export async function sendSignalAlert(s: OpportunityScore): Promise<boolean> {
   const result = await sendPhase1Alert(s);

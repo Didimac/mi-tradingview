@@ -1,41 +1,49 @@
 "use client";
 
-import { getBinanceWS } from "@/lib/binance/ws";
+/**
+ * OpportunityWatcher v2 — Auto Paper Trading
+ *
+ * When SmartScorer detects score >= 75:
+ *   1. Auto-opens paper trade (no manual buttons)
+ *   2. Sends Telegram Phase 1: "Señal detectada — entrando automáticamente"
+ *   3. Sends Telegram Phase 2: "Entrada ejecutada en $price"
+ *   4. On close (SL/TP1/TP2): sends Telegram result
+ *
+ * Buttons (Ejecutar/Ignorar) only appear when BINANCE_API_KEY is configured
+ * (real money mode, handled by sendPhase2Alert with buttons).
+ *
+ * Max 1 position open at a time.
+ */
+
 import type { OpportunityScore } from "@/lib/scoring/opportunityScorer";
 import {
+  autoOpenTrade,
+  hasOpenPosition,
+  isAutoModeActive,
+  onTradeEvent,
+  startPriceMonitor,
+  usePaperTrading,
+} from "@/lib/papertrading/paperTradingEngine";
+import {
+  sendAutoSignalDetected,
+  sendAutoEntryExecuted,
+  sendAutoTradeClose,
+  sendAutoPartialClose,
   sendPhase1Alert,
-  sendPhase2Alert,
-  sendOpportunityExpired,
-  sendPriceEscaped,
-  sendSignalCancelled,
 } from "./telegramNotifier";
-
-// ─── Types ───
-
-interface ActiveOpportunity {
-  symbol: string;
-  phase: 1 | 2;
-  score: OpportunityScore;
-  timestamp: number;          // ms when Phase 1 was sent
-  phase1MessageId?: number;   // Telegram message ID for Phase 1
-  phase2MessageId?: number;   // Telegram message ID for Phase 2
-  phase2Timestamp?: number;   // ms when Phase 2 was sent
-}
 
 // ─── Constants ───
 
-const OPPORTUNITY_EXPIRY_MS = 2 * 60 * 60 * 1000;   // 2 hours
-const PHASE1_COOLDOWN_MS = 2 * 60 * 60 * 1000;       // 2 hours anti-spam
-const IDEAL_ZONE_TOLERANCE = 0.001;                    // ±0.1%
-const SCORE_CANCEL_THRESHOLD = 60;
+const PHASE1_COOLDOWN_MS = 2 * 60 * 60 * 1000;   // 2h anti-spam per pair
+const SCORE_CANCEL_THRESHOLD = 40;
 
 // ─── State ───
 
-const activeOpportunities = new Map<string, ActiveOpportunity>();
-const lastPhase1Time = new Map<string, number>();      // anti-spam tracker
-let wsUnsubscribe: (() => void) | null = null;
-let expiryInterval: ReturnType<typeof setInterval> | null = null;
+const lastSignalTime = new Map<string, number>();
 let started = false;
+
+// Track which symbols have active auto-trades (for UI display)
+const activeAutoTrades = new Map<string, { score: OpportunityScore; timestamp: number }>();
 
 // ─── Callbacks for UI integration ───
 
@@ -46,166 +54,159 @@ export function setWatcherCallback(cb: WatcherCallback | null) {
   onEvent = cb;
 }
 
-// ─── Core logic ───
+// ─── Fetch trading mode from server ───
 
-function isInIdealZone(price: number, idealPrice: number): boolean {
-  return Math.abs(price - idealPrice) / idealPrice <= IDEAL_ZONE_TOLERANCE;
-}
-
-function hasPriceEscaped(price: number, opp: ActiveOpportunity): boolean {
-  const { score } = opp;
-  if (score.direction === "LONG") {
-    return price > score.entryZone.latest;
-  } else {
-    return price < score.entryZone.latest;
+async function fetchTradingMode() {
+  try {
+    const res = await fetch("/api/config/trading-mode");
+    const data = await res.json();
+    usePaperTrading.getState().setTradingMode(data.realMoney ? "real" : "paper");
+    console.log(`[AutoPaper] Server mode: ${data.realMoney ? "REAL" : "PAPER"}`);
+  } catch {
+    // default stays "paper"
   }
 }
 
-async function handlePriceTick(symbol: string, price: number) {
-  const opp = activeOpportunities.get(symbol);
-  if (!opp) return;
+// ─── Manual mode: send Telegram with buttons, wait for user ───
 
-  // Only monitor price during Phase 1 (waiting for ideal entry)
-  if (opp.phase !== 1) return;
+async function manualSignal(score: OpportunityScore): Promise<boolean> {
+  const lastTime = lastSignalTime.get(score.symbol) ?? 0;
+  if (Date.now() - lastTime < PHASE1_COOLDOWN_MS) return false;
 
-  // Check if price reached ideal zone → trigger Phase 2
-  if (isInIdealZone(price, opp.score.entryZone.ideal)) {
-    opp.phase = 2;
-    opp.phase2Timestamp = Date.now();
+  // Send Phase 1 (informational)
+  const result = await sendPhase1Alert(score);
+  if (!result.ok) return false;
 
-    const result = await sendPhase2Alert(opp.score, price);
-    opp.phase2MessageId = result.messageId;
+  lastSignalTime.set(score.symbol, Date.now());
+  activeAutoTrades.set(score.symbol, { score, timestamp: Date.now() });
+  onEvent?.("manual_signal", score.symbol, { score: score.score });
 
-    onEvent?.("phase2", symbol, { price });
-
-    // Phase 2 sent — remove from active monitoring after 30 min (button expiry handled by webhook)
-    setTimeout(() => {
-      if (activeOpportunities.get(symbol)?.phase === 2) {
-        activeOpportunities.delete(symbol);
-        onEvent?.("phase2_expired", symbol);
-      }
-    }, 30 * 60 * 1000);
-
-    return;
-  }
-
-  // Check if price escaped (moved past entryZone.latest without pullback)
-  if (hasPriceEscaped(price, opp)) {
-    activeOpportunities.delete(symbol);
-    await sendPriceEscaped(symbol);
-    onEvent?.("escaped", symbol, { price });
-    return;
-  }
+  console.log(`[Manual] Signal sent to Telegram: ${score.symbol} ${score.direction} score=${score.score}`);
+  return true;
 }
 
-function checkExpiries() {
-  const now = Date.now();
-  for (const [symbol, opp] of activeOpportunities) {
-    if (opp.phase === 1 && now - opp.timestamp > OPPORTUNITY_EXPIRY_MS) {
-      activeOpportunities.delete(symbol);
-      sendOpportunityExpired(symbol);
-      onEvent?.("expired", symbol);
+// ─── Core: Auto-enter paper trade ───
+
+async function autoEnterTrade(score: OpportunityScore): Promise<boolean> {
+  // Max 1 position
+  if (hasOpenPosition()) {
+    console.log(`[AutoPaper] Skipping ${score.symbol} — position already open`);
+    return false;
+  }
+
+  // Anti-spam: max 1 signal per pair every 2h
+  const lastTime = lastSignalTime.get(score.symbol) ?? 0;
+  if (Date.now() - lastTime < PHASE1_COOLDOWN_MS) {
+    console.log(`[AutoPaper] Skipping ${score.symbol} — cooldown active`);
+    return false;
+  }
+
+  const price = score.entry;
+  const side = score.direction === "LONG" ? "long" : "short";
+
+  // Phase 1: Send "signal detected, entering automatically"
+  console.log(`[AutoPaper] 📊 Signal detected: ${score.symbol} ${score.direction} score=${score.score}`);
+  sendAutoSignalDetected(score);
+
+  // Open paper trade
+  const opened = autoOpenTrade({
+    symbol: score.symbol,
+    side: side as "long" | "short",
+    price,
+    sl: score.stopLoss,
+    tp: score.takeProfit1,
+    tp2: score.takeProfit2,
+    reason: `SmartScorer v2 | Score ${score.score} | ${score.reason}`,
+  });
+
+  if (!opened) {
+    console.log(`[AutoPaper] Failed to open trade for ${score.symbol}`);
+    return false;
+  }
+
+  // Phase 2: Send "entry executed at $price"
+  sendAutoEntryExecuted(score, price);
+
+  // Track state
+  lastSignalTime.set(score.symbol, Date.now());
+  activeAutoTrades.set(score.symbol, { score, timestamp: Date.now() });
+  onEvent?.("auto_entry", score.symbol, { score: score.score, price });
+
+  console.log(`[AutoPaper] ✅ Auto-entered ${side.toUpperCase()} ${score.symbol} @ ${price}`);
+  return true;
+}
+
+// ─── Trade event handler (for Telegram close notifications) ───
+
+function setupTradeEventHandler() {
+  onTradeEvent((event, data) => {
+    if (event === "close") {
+      const { symbol, exitPrice, pnlPct, capital, exitReason } = data;
+      console.log(`[AutoPaper] Trade closed: ${symbol} ${exitReason} pnl=${pnlPct?.toFixed(2)}%`);
+      sendAutoTradeClose(symbol, exitReason ?? "Unknown", pnlPct ?? 0, capital ?? 0);
+      activeAutoTrades.delete(symbol);
+      onEvent?.("auto_close", symbol, { exitReason, pnlPct, capital });
+    } else if (event === "partial_close") {
+      const { symbol, pnlPct, capital } = data;
+      console.log(`[AutoPaper] TP1 partial close: ${symbol} +${pnlPct?.toFixed(2)}%`);
+      sendAutoPartialClose(symbol, pnlPct ?? 0, capital ?? 0);
+      onEvent?.("auto_partial", symbol, { pnlPct, capital });
     }
-  }
+  });
 }
 
 // ─── Public API ───
 
 /**
- * Register a new opportunity (score >= 70).
- * Sends Phase 1 alert and starts watching price via WebSocket.
+ * Called from OpportunityBoard when score >= 75 and eligible.
+ *
+ * Routing logic:
+ *   - Real money mode (BINANCE_API_KEY set) → ALWAYS manual with buttons (never auto)
+ *   - Paper + autoMode ON  → auto-execute immediately
+ *   - Paper + autoMode OFF → send Telegram alert with buttons, wait for confirmation
  */
 export async function registerOpportunity(score: OpportunityScore): Promise<boolean> {
-  const { symbol } = score;
-
-  // Anti-spam: max 1 Phase 1 per pair every 2 hours
-  const lastTime = lastPhase1Time.get(symbol) ?? 0;
-  if (Date.now() - lastTime < PHASE1_COOLDOWN_MS) {
-    return false;
+  if (isAutoModeActive()) {
+    return autoEnterTrade(score);
   }
 
-  // Already watching this symbol
-  if (activeOpportunities.has(symbol)) {
-    return false;
-  }
-
-  // Send Phase 1 alert
-  const result = await sendPhase1Alert(score);
-  if (!result.ok) return false;
-
-  const opp: ActiveOpportunity = {
-    symbol,
-    phase: 1,
-    score,
-    timestamp: Date.now(),
-    phase1MessageId: result.messageId,
-  };
-
-  activeOpportunities.set(symbol, opp);
-  lastPhase1Time.set(symbol, Date.now());
-  onEvent?.("phase1", symbol, { score: score.score });
-
-  // Ensure WebSocket subscription covers this symbol
-  ensureWsSubscription();
-
-  return true;
+  // Manual mode (or real money mode) → send alert, wait for user
+  return manualSignal(score);
 }
 
 /**
- * Update score for an active opportunity.
- * If score drops below 60, cancel the opportunity.
+ * Update score for a symbol. If score dropped below threshold, log it.
+ * Note: position close is handled by SL/TP via WebSocket, not by score drop.
  */
 export async function updateScore(symbol: string, newScore: number) {
-  const opp = activeOpportunities.get(symbol);
-  if (!opp || opp.phase !== 1) return;
-
   if (newScore < SCORE_CANCEL_THRESHOLD) {
-    activeOpportunities.delete(symbol);
-    await sendSignalCancelled(symbol, newScore);
-    onEvent?.("cancelled", symbol, { newScore });
+    console.log(`[AutoPaper] Score dropped for ${symbol}: ${newScore} (below ${SCORE_CANCEL_THRESHOLD})`);
+    // Don't close the trade — SL/TP handles exit. Just notify.
+    onEvent?.("score_drop", symbol, { newScore });
   }
 }
 
 /**
- * Check if a symbol has an active opportunity (for UI display).
- */
-export function getActiveOpportunity(symbol: string): ActiveOpportunity | undefined {
-  return activeOpportunities.get(symbol);
-}
-
-/**
- * Get all active opportunities.
- */
-export function getAllActiveOpportunities(): ActiveOpportunity[] {
-  return Array.from(activeOpportunities.values());
-}
-
-/**
- * Check if Phase 1 alert can be sent for a symbol (anti-spam check).
+ * Check if Phase 1 alert can be sent for a symbol (anti-spam + no open position).
  */
 export function canSendPhase1(symbol: string): boolean {
-  const lastTime = lastPhase1Time.get(symbol) ?? 0;
-  return Date.now() - lastTime >= PHASE1_COOLDOWN_MS && !activeOpportunities.has(symbol);
+  if (hasOpenPosition()) return false;
+  const lastTime = lastSignalTime.get(symbol) ?? 0;
+  return Date.now() - lastTime >= PHASE1_COOLDOWN_MS;
 }
 
-// ─── WebSocket management ───
+/**
+ * Get active auto-trade for a symbol (for UI Eye icon).
+ */
+export function getActiveOpportunity(symbol: string) {
+  return activeAutoTrades.get(symbol);
+}
 
-function ensureWsSubscription() {
-  // Get all symbols being watched
-  const watchedSymbols = Array.from(activeOpportunities.keys());
-  if (watchedSymbols.length === 0) {
-    // No opportunities — unsubscribe
-    wsUnsubscribe?.();
-    wsUnsubscribe = null;
-    return;
-  }
-
-  // Re-subscribe with current symbol list
-  wsUnsubscribe?.();
-  const ws = getBinanceWS();
-  wsUnsubscribe = ws.subscribeMiniTickers(watchedSymbols, (tick) => {
-    handlePriceTick(tick.symbol, tick.close);
-  });
+/**
+ * Get all active auto-trades.
+ */
+export function getAllActiveOpportunities() {
+  return Array.from(activeAutoTrades.values());
 }
 
 // ─── Lifecycle ───
@@ -214,17 +215,21 @@ export function startOpportunityWatcher() {
   if (started) return;
   started = true;
 
-  // Check expiries every 30 seconds
-  expiryInterval = setInterval(checkExpiries, 30_000);
+  // Start WebSocket price monitor for SL/TP checking
+  startPriceMonitor();
+
+  // Setup trade event handler for Telegram notifications
+  setupTradeEventHandler();
+
+  // Fetch trading mode from server (real vs paper)
+  fetchTradingMode();
+
+  const { autoMode } = usePaperTrading.getState();
+  console.log(`[AutoPaper] Watcher started | autoMode=${autoMode ? "ON" : "OFF"}`);
 }
 
 export function stopOpportunityWatcher() {
   started = false;
-  wsUnsubscribe?.();
-  wsUnsubscribe = null;
-  if (expiryInterval) {
-    clearInterval(expiryInterval);
-    expiryInterval = null;
-  }
-  activeOpportunities.clear();
+  activeAutoTrades.clear();
+  onTradeEvent(null);
 }
