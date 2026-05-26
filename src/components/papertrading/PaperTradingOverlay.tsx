@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import {
   usePaperTrading,
   startPriceMonitor,
@@ -78,9 +78,71 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
     };
   }, [setPanelPosition]);
 
+  const [serverSync, setServerSync] = useState(false);
+  const [lastScan, setLastScan] = useState<string | null>(null);
+
   useEffect(() => {
     startPriceMonitor();
   }, []);
+
+  // Sync with server state (Vercel Blob) every 30s
+  useEffect(() => {
+    const syncFromServer = async () => {
+      try {
+        const res = await fetch("/api/paper-trading/state");
+        const data = await res.json();
+        if (data.ok) {
+          setServerSync(true);
+          if (data.lastScanTime > 0) {
+            setLastScan(new Date(data.lastScanTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+          }
+          // Sync server state into local Zustand store (server is source of truth)
+          const store = usePaperTrading.getState();
+          if (data.capital !== store.capital || data.autoMode !== store.autoMode) {
+            if (data.capital) usePaperTrading.setState({ capital: data.capital });
+            if (typeof data.autoMode === "boolean") usePaperTrading.setState({ autoMode: data.autoMode });
+          }
+          // Sync position from server if different
+          const serverPos = data.position;
+          const localPos = store.position;
+          if (serverPos && !localPos) {
+            // Server has position, local doesn't → sync
+            usePaperTrading.setState({
+              position: {
+                ...serverPos,
+                tp: serverPos.tp1,
+              },
+            });
+          } else if (!serverPos && localPos) {
+            // Server closed position → sync
+            usePaperTrading.setState({ position: null });
+          }
+          if (data.history?.length > store.history.length) {
+            usePaperTrading.setState({ history: data.history });
+          }
+        }
+      } catch {
+        setServerSync(false);
+      }
+    };
+    syncFromServer();
+    const id = setInterval(syncFromServer, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Sync autoMode toggle TO server
+  const handleAutoModeToggle = useCallback(async (on: boolean) => {
+    setAutoMode(on);
+    try {
+      await fetch("/api/paper-trading/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoMode: on }),
+      });
+    } catch {
+      // local state already updated
+    }
+  }, [setAutoMode]);
 
   // Poll for pending trades from Telegram webhook
   useEffect(() => {
@@ -217,7 +279,7 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
               {/* Toggle — only in paper mode */}
               {tradingMode === "paper" && (
                 <button
-                  onClick={() => setAutoMode(!autoMode)}
+                  onClick={() => handleAutoModeToggle(!autoMode)}
                   className={cn(
                     "relative w-7 h-3.5 rounded-full transition-colors duration-200",
                     autoMode ? "bg-bull" : "bg-border",
@@ -236,6 +298,19 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
               {/* Real money mode — lock indicator */}
               {tradingMode === "real" && (
                 <span className="text-[8px] text-yellow-500/70">Siempre manual</span>
+              )}
+
+              {/* Server sync indicator */}
+              {tradingMode !== "real" && (
+                <div className="flex items-center gap-1">
+                  <span className={cn(
+                    "w-1.5 h-1.5 rounded-full",
+                    serverSync ? "bg-bull animate-pulse" : "bg-muted-foreground/30",
+                  )} />
+                  <span className="text-[8px] text-muted-foreground/50">
+                    {serverSync ? (lastScan ? `Scan ${lastScan}` : "Server OK") : "Sin server"}
+                  </span>
+                </div>
               )}
             </div>
 
