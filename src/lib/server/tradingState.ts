@@ -7,7 +7,7 @@
  *   - lastSignalTimes (cooldown tracking)
  */
 
-import { put, list } from "@vercel/blob";
+import { put, list, head } from "@vercel/blob";
 
 // ─── Types ───
 
@@ -87,26 +87,31 @@ function defaultState(): TradingState {
 // ─── Blob operations ───
 
 /**
- * Use list() to get the blob's downloadUrl — this includes an auth token
- * that bypasses CDN caching and always returns fresh content.
- * The public `.url` is aggressively cached by CDN and returns stale data.
+ * Find the blob URL via list(), then use head() to get a fresh downloadUrl.
+ * head() returns metadata directly from the store (not CDN-cached).
  */
-async function findBlobDownloadUrl(): Promise<string | null> {
+async function findBlobUrl(): Promise<string | null> {
   try {
     const { blobs } = await list({ prefix: BLOB_KEY });
-    if (blobs.length > 0) return blobs[0].downloadUrl;
+    if (blobs.length > 0) return blobs[0].url;
     return null;
   } catch {
     return null;
   }
 }
 
+// In-module cache of the last written blob URL (avoids stale list() results within same instance)
+let lastPutUrl: string | null = null;
+
 export async function loadState(): Promise<TradingState> {
   try {
-    const downloadUrl = await findBlobDownloadUrl();
-    if (!downloadUrl) return defaultState();
+    // Prefer the URL from the last put() in this instance (freshest)
+    const blobUrl = lastPutUrl ?? await findBlobUrl();
+    if (!blobUrl) return defaultState();
 
-    const res = await fetch(downloadUrl, { cache: "no-store" });
+    // Use head() to get fresh downloadUrl — bypasses CDN cache
+    const blobMeta = await head(blobUrl);
+    const res = await fetch(blobMeta.downloadUrl, { cache: "no-store" });
     if (!res.ok) return defaultState();
 
     const data = await res.json();
@@ -120,10 +125,13 @@ export async function loadState(): Promise<TradingState> {
 
 export async function saveState(state: TradingState): Promise<void> {
   try {
-    await put(BLOB_KEY, JSON.stringify(state), {
+    const blob = await put(BLOB_KEY, JSON.stringify(state), {
       access: "public",
       addRandomSuffix: false,
+      cacheControlMaxAge: 60, // minimize CDN cache (min 60s)
     });
+    // Cache URL from put() for immediate reads in same instance
+    lastPutUrl = blob.url;
   } catch (e) {
     console.error("[TradingState] Failed to save:", e);
   }
