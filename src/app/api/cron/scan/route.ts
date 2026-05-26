@@ -68,24 +68,27 @@ function pctBetween(a: number, b: number): string {
 // ─── Auth check ───
 
 function isAuthorized(req: Request): boolean {
-  // Vercel Cron sends this header automatically
-  const cronSecret = req.headers.get("authorization");
   const envSecret = process.env.CRON_SECRET;
 
-  // If CRON_SECRET is set, verify it
+  // Vercel Cron internal header
+  if (req.headers.get("x-vercel-cron")) return true;
+
+  // CRON_SECRET via Authorization header or query param
   if (envSecret) {
-    return cronSecret === `Bearer ${envSecret}`;
+    const authHeader = req.headers.get("authorization");
+    if (authHeader === `Bearer ${envSecret}`) return true;
+
+    // Also check query param (for cron-job.org which doesn't support custom headers easily)
+    const url = new URL(req.url);
+    if (url.searchParams.get("secret") === envSecret) return true;
+
+    return false;
   }
 
-  // Also accept Vercel's internal cron header
-  const vercelCron = req.headers.get("x-vercel-cron");
-  if (vercelCron) return true;
-
-  // In development, allow all
+  // Development mode
   if (process.env.NODE_ENV === "development") return true;
 
-  // If no secret configured, allow (user can add CRON_SECRET later for security)
-  return true;
+  return false;
 }
 
 // ─── Main handler ───
