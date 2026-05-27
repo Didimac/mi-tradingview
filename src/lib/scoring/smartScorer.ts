@@ -53,11 +53,9 @@ export interface SmartScoreResult {
 
 // ─── Funding Rate (Indicator 1 — 35pts) ─────────────────
 
-// Use fapi.binance.vision on server (no geo restrictions) and fapi.binance.com on client
-const FUNDING_RATE_URL =
-  typeof window === "undefined"
-    ? "https://fapi.binance.vision/fapi/v1/fundingRate"
-    : "https://fapi.binance.com/fapi/v1/fundingRate";
+// fapi.binance.com works from most Vercel regions (unlike api.binance.com which returns 451)
+// fapi.binance.vision does NOT exist — there is no data-api equivalent for futures
+const FUNDING_RATE_URL = "https://fapi.binance.com/fapi/v1/fundingRate";
 
 /**
  * Fetch latest funding rates from Binance Futures (public, no API key).
