@@ -56,29 +56,30 @@ export interface SmartScoreResult {
 /**
  * Fetch latest funding rate.
  *
- * Strategy:
- * - Server-side: Use Bybit API (Binance fapi.binance.com returns 451 from US/EU servers)
- * - Client-side: Use Binance fapi directly (works from browsers, no geo-block)
+ * Server-side: Binance & Bybit are geo-blocked from US Vercel servers.
+ *   → Use Bitget (primary) or OKX (fallback) — both work from Vercel iad1.
+ * Client-side: Binance Futures works from browsers (no geo-block).
  *
- * Bybit uses same perpetual symbols (BTCUSDT, SOLUSDT, etc.) and similar funding rates.
  * Returns the funding rate as a decimal (e.g. 0.0001 = 0.01%).
  */
 export async function fetchFundingRate(symbol: string): Promise<number> {
   if (typeof window !== "undefined") {
-    // Client-side: Binance Futures works from browsers
     return fetchFundingRateBinance(symbol);
   }
-  // Server-side: Bybit (no geo-restrictions)
-  return fetchFundingRateBybit(symbol);
+  // Server: try Bitget first, then OKX as fallback
+  const fr = await fetchFundingRateBitget(symbol);
+  if (fr !== 0) return fr;
+  return fetchFundingRateOKX(symbol);
 }
 
-async function fetchFundingRateBybit(symbol: string): Promise<number> {
+/** Bitget — uses same BTCUSDT symbols, no geo-restrictions */
+async function fetchFundingRateBitget(symbol: string): Promise<number> {
   try {
-    const url = `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol.toUpperCase()}`;
+    const url = `https://api.bitget.com/api/v2/mix/market/current-fund-rate?symbol=${symbol.toUpperCase()}&productType=USDT-FUTURES`;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return 0;
     const data = await res.json();
-    const list = data?.result?.list;
+    const list = data?.data;
     if (!list || list.length === 0) return 0;
     return parseFloat(list[0].fundingRate) || 0;
   } catch {
@@ -86,6 +87,24 @@ async function fetchFundingRateBybit(symbol: string): Promise<number> {
   }
 }
 
+/** OKX — uses BTC-USDT-SWAP format, no geo-restrictions */
+async function fetchFundingRateOKX(symbol: string): Promise<number> {
+  try {
+    // Convert BTCUSDT → BTC-USDT-SWAP
+    const base = symbol.replace("USDT", "");
+    const instId = `${base}-USDT-SWAP`;
+    const url = `https://www.okx.com/api/v5/public/funding-rate?instId=${instId}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return 0;
+    const data = await res.json();
+    if (data?.code !== "0" || !data?.data?.length) return 0;
+    return parseFloat(data.data[0].fundingRate) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Binance Futures — only works from browsers (451 from servers) */
 async function fetchFundingRateBinance(symbol: string): Promise<number> {
   try {
     const res = await fetch(
