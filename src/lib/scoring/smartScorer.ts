@@ -53,17 +53,44 @@ export interface SmartScoreResult {
 
 // ─── Funding Rate (Indicator 1 — 35pts) ─────────────────
 
-// fapi.binance.com works from most Vercel regions (unlike api.binance.com which returns 451)
-// fapi.binance.vision does NOT exist — there is no data-api equivalent for futures
-const FUNDING_RATE_URL = "https://fapi.binance.com/fapi/v1/fundingRate";
-
 /**
- * Fetch latest funding rates from Binance Futures (public, no API key).
- * Returns the most recent funding rate as a decimal (e.g. 0.0001 = 0.01%).
+ * Fetch latest funding rate.
+ *
+ * Strategy:
+ * - Server-side: Use Bybit API (Binance fapi.binance.com returns 451 from US/EU servers)
+ * - Client-side: Use Binance fapi directly (works from browsers, no geo-block)
+ *
+ * Bybit uses same perpetual symbols (BTCUSDT, SOLUSDT, etc.) and similar funding rates.
+ * Returns the funding rate as a decimal (e.g. 0.0001 = 0.01%).
  */
 export async function fetchFundingRate(symbol: string): Promise<number> {
+  if (typeof window !== "undefined") {
+    // Client-side: Binance Futures works from browsers
+    return fetchFundingRateBinance(symbol);
+  }
+  // Server-side: Bybit (no geo-restrictions)
+  return fetchFundingRateBybit(symbol);
+}
+
+async function fetchFundingRateBybit(symbol: string): Promise<number> {
   try {
-    const res = await fetch(`${FUNDING_RATE_URL}?symbol=${symbol}&limit=1`);
+    const url = `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol.toUpperCase()}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return 0;
+    const data = await res.json();
+    const list = data?.result?.list;
+    if (!list || list.length === 0) return 0;
+    return parseFloat(list[0].fundingRate) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function fetchFundingRateBinance(symbol: string): Promise<number> {
+  try {
+    const res = await fetch(
+      `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${symbol}&limit=1`,
+    );
     if (!res.ok) return 0;
     const data = (await res.json()) as { fundingRate: string }[];
     if (!data.length) return 0;
