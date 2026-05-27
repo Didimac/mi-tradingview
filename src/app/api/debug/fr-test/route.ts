@@ -5,12 +5,10 @@ import { NextResponse } from "next/server";
 
 export async function GET() {
   const endpoints = [
+    { name: "Bybit (BTCUSDT)", url: "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT" },
+    { name: "Bybit (SOLUSDT)", url: "https://api.bybit.com/v5/market/tickers?category=linear&symbol=SOLUSDT" },
+    { name: "Bybit (BNBUSDT)", url: "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BNBUSDT" },
     { name: "fapi.binance.com", url: "https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1" },
-    { name: "fapi1.binance.com", url: "https://fapi1.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1" },
-    { name: "fapi2.binance.com", url: "https://fapi2.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1" },
-    { name: "fapi3.binance.com", url: "https://fapi3.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1" },
-    { name: "fapi4.binance.com", url: "https://fapi4.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1" },
-    { name: "dapi.binance.com", url: "https://dapi.binance.com/dapi/v1/fundingRate?symbol=BTCUSD_PERP&limit=1" },
   ];
 
   const results = [];
