@@ -392,23 +392,47 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
               </div>
             )}
 
-            {/* No position — show last trade */}
-            {!position && lastTrade && (
+            {/* No position — show trade history */}
+            {!position && history.length > 0 && (
               <div className="px-3 py-2">
-                <span className="text-[10px] text-muted-foreground/60">Ultimo trade:</span>
-                <div className="flex items-center justify-between mt-0.5">
-                  <span className="text-[10px] text-muted-foreground">
-                    {lastTrade.side.toUpperCase()} {lastTrade.symbol.replace("USDT", "")}
-                  </span>
-                  <span
-                    className={`text-[11px] font-mono font-semibold ${
-                      lastTrade.pnl >= 0 ? "text-bull" : "text-bear"
-                    }`}
-                  >
-                    {lastTrade.pnl >= 0 ? "+" : ""}${lastTrade.pnl.toFixed(2)}
-                  </span>
+                <span className="text-[10px] text-muted-foreground/60 font-semibold">
+                  Historial ({history.length} {history.length === 1 ? "trade" : "trades"})
+                </span>
+
+                {/* Show last 3 trades */}
+                <div className="mt-1 space-y-1.5">
+                  {history.slice(-3).reverse().map((t) => (
+                    <div key={t.id} className="border-b border-border/10 pb-1 last:border-0">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1">
+                          {t.side === "long" ? (
+                            <TrendingUp size={9} className="text-bull" />
+                          ) : (
+                            <TrendingDown size={9} className="text-bear" />
+                          )}
+                          <span className="text-[10px] text-muted-foreground">
+                            {t.symbol.replace("USDT", "")}
+                          </span>
+                        </div>
+                        <span
+                          className={`text-[11px] font-mono font-semibold ${
+                            t.pnl >= 0 ? "text-bull" : "text-bear"
+                          }`}
+                        >
+                          {t.pnl >= 0 ? "+" : ""}${t.pnl.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between mt-0.5">
+                        <span className="text-[9px] text-muted-foreground/50">
+                          {t.exitReason}
+                        </span>
+                        <span className="text-[9px] text-muted-foreground/40">
+                          ${formatPrice(t.entryPrice)} → ${formatPrice(t.exitPrice)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <span className="text-[9px] text-muted-foreground/50">{lastTrade.exitReason}</span>
               </div>
             )}
 
