@@ -77,21 +77,30 @@ export async function GET(req: Request) {
       // Raw score (no gates)
       const rawScore = frComponent.points + divComponent.points + vwapComponent.points;
 
+      // Simulate adjusted score (matching opportunityScorer logic)
+      const bestDir = longCount >= shortCount ? "LONG" : "SHORT";
+      let frContradiction = false;
+      let simScore = rawScore;
+      if (frComponent.direction !== "NEUTRAL" && frComponent.direction !== bestDir) {
+        simScore -= 15;
+        frContradiction = true;
+      }
+      simScore = Math.max(0, simScore);
+      const ema55Penalty = (bestDir === "LONG" && price <= ema55Val) || (bestDir === "SHORT" && price >= ema55Val);
+      if (ema55Penalty) simScore = Math.round(simScore * 0.9);
+      if (regime === "BEAR" && bestDir === "LONG") simScore = Math.round(simScore * 0.9);
+
       // Gate analysis
       const gates: string[] = [];
       if (candles.length < 60) gates.push("BLOCKED: candles < 60");
       if (isNaN(atrVal) || atrVal <= 0) gates.push("BLOCKED: ATR invalid");
-      if (isNaN(ema21Val)) gates.push("BLOCKED: EMA21 invalid");
-      if (isNaN(ema55Val)) gates.push("BLOCKED: EMA55 invalid");
       if (dirs.length === 0) gates.push("BLOCKED: all indicators NEUTRAL");
       if (Math.max(longCount, shortCount) < 2) gates.push(`BLOCKED: only ${Math.max(longCount, shortCount)} agree (need 2)`);
-
-      const bestDir = longCount >= shortCount ? "LONG" : "SHORT";
-      if (bestDir === "LONG" && price <= ema55Val) gates.push("BLOCKED: EMA55 trend filter (LONG but price < EMA55)");
-      if (bestDir === "SHORT" && price >= ema55Val) gates.push("BLOCKED: EMA55 trend filter (SHORT but price > EMA55)");
-
-      if (regime === "BEAR" && bestDir === "LONG") gates.push("PENALTY: -30% BEAR regime on LONG");
-      if (rawScore < 75) gates.push(`BELOW THRESHOLD: score ${rawScore} < 75`);
+      if (frContradiction) gates.push("PENALTY: FR contradiction -15pts");
+      if (ema55Penalty) gates.push("PENALTY: -10% below EMA55");
+      if (regime === "BEAR" && bestDir === "LONG") gates.push("PENALTY: -10% BEAR regime on LONG");
+      if (simScore < 65) gates.push(`BELOW THRESHOLD: adjusted score ${simScore} < 65`);
+      if (simScore >= 65) gates.push(`✅ SIGNAL ELIGIBLE: adjusted score ${simScore} >= 65`);
       if (gates.length === 0) gates.push("ALL GATES PASSED ✓");
 
       results.push({
@@ -99,6 +108,7 @@ export async function GET(req: Request) {
         price,
         candleCount: candles.length,
         regime,
+        adjustedScore: simScore,
         rsi: rsiVal ? +rsiVal.toFixed(2) : null,
         atr: atrVal ? +atrVal.toFixed(2) : null,
         ema21: ema21Val ? +ema21Val.toFixed(2) : null,

@@ -91,7 +91,7 @@ export interface OpportunityScore {
 
 // ─── Constants ───
 
-const SCORE_THRESHOLD = 75;
+const SCORE_THRESHOLD = 65;
 const ATR_SL_MULT = 1.5;
 const ATR_TP1_MULT = 2.25;
 const ATR_TP2_MULT = 4.5;
@@ -199,12 +199,11 @@ export async function scoreOpportunityDual(
 
   const scoreFinal = Math.max(0, rawScore);
 
-  // EMA55 trend filter
-  if (finalDir === "LONG" && price <= ema55Val) {
-    return emptyScore(symbol, regime);
-  }
-  if (finalDir === "SHORT" && price >= ema55Val) {
-    return emptyScore(symbol, regime);
+  // EMA55 trend context (soft penalty instead of hard block)
+  // In bear markets, counter-trend bounces are common — don't block, just penalize
+  let ema55Penalty = false;
+  if ((finalDir === "LONG" && price <= ema55Val) || (finalDir === "SHORT" && price >= ema55Val)) {
+    ema55Penalty = true;
   }
 
   // Entry zone
@@ -221,9 +220,14 @@ export async function scoreOpportunityDual(
     adjustedScore = Math.round(adjustedScore * 0.8);
   }
 
-  // Module 4: penalize LONG in BEAR regime
+  // EMA55 counter-trend penalty (-10%)
+  if (ema55Penalty) {
+    adjustedScore = Math.round(adjustedScore * 0.9);
+  }
+
+  // Module 4: penalize LONG in BEAR regime (reduced from 30% to 10%)
   if (regime === "BEAR" && finalDir === "LONG") {
-    adjustedScore = Math.round(adjustedScore * 0.7);
+    adjustedScore = Math.round(adjustedScore * 0.9);
   }
 
   // SL/TP from ATR
