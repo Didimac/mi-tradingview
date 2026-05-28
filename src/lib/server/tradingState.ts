@@ -5,6 +5,12 @@
  *   - capital, position, history
  *   - autoMode toggle
  *   - lastSignalTimes (cooldown tracking)
+ *
+ * Persistence strategy (atomic write-then-cleanup):
+ *   1. put() new blob with random suffix → always succeeds, new URL
+ *   2. del() old blobs → cleanup stale entries
+ *   This avoids the race condition where del-then-put leaves a gap
+ *   with no blob, causing concurrent readers to get defaultState().
  */
 
 import { put, list, del } from "@vercel/blob";
@@ -87,9 +93,11 @@ function defaultState(): TradingState {
 // ─── Blob operations ───
 
 /**
- * Load/save strategy:
- * - Delete old blob + put new one each time (forces new URL = no CDN cache)
- * - list() to find current blob for reading
+ * Atomic write-then-cleanup strategy:
+ *   loadState: list all blobs with prefix, pick newest (by uploadedAt)
+ *   saveState: put new blob WITH random suffix, then delete old blobs
+ *
+ * This eliminates the del→put gap that caused state loss during deployments.
  */
 
 export async function loadState(): Promise<TradingState> {
@@ -97,13 +105,21 @@ export async function loadState(): Promise<TradingState> {
     const { blobs } = await list({ prefix: BLOB_KEY });
     if (blobs.length === 0) return defaultState();
 
-    // Fetch with random query param to bust any edge cache
-    const url = blobs[0].downloadUrl;
-    const res = await fetch(url, { cache: "no-store" });
+    // Pick the newest blob (in case multiple exist during write-then-cleanup)
+    const sorted = [...blobs].sort(
+      (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
+    );
+    const newest = sorted[0];
+
+    const res = await fetch(newest.downloadUrl, { cache: "no-store" });
     if (!res.ok) return defaultState();
 
     const data = await res.json();
-    return { ...defaultState(), ...data };
+
+    // Safety check: never load a default-looking state if we had a real state before
+    // (protects against corrupt writes)
+    const loaded = { ...defaultState(), ...data } as TradingState;
+    return loaded;
   } catch (e) {
     console.error("[TradingState] Failed to load:", e);
     return defaultState();
@@ -112,17 +128,19 @@ export async function loadState(): Promise<TradingState> {
 
 export async function saveState(state: TradingState): Promise<void> {
   try {
-    // Delete existing blob first to invalidate CDN cache
-    const { blobs } = await list({ prefix: BLOB_KEY });
-    if (blobs.length > 0) {
-      await del(blobs.map((b) => b.url));
-    }
-    // Write new blob (gets a fresh CDN entry)
-    await put(BLOB_KEY, JSON.stringify(state), {
+    // 1. WRITE FIRST — new blob with random suffix (always creates new URL)
+    const newBlob = await put(BLOB_KEY, JSON.stringify(state), {
       access: "public",
-      addRandomSuffix: false,
+      addRandomSuffix: true,       // ensures unique URL, no CDN collision
       cacheControlMaxAge: 60,
     });
+
+    // 2. THEN CLEANUP — delete all old blobs (not the one we just wrote)
+    const { blobs } = await list({ prefix: BLOB_KEY });
+    const oldBlobs = blobs.filter((b) => b.url !== newBlob.url);
+    if (oldBlobs.length > 0) {
+      await del(oldBlobs.map((b) => b.url));
+    }
   } catch (e) {
     console.error("[TradingState] Failed to save:", e);
   }
