@@ -6,13 +6,14 @@
  *   2. RSI Divergence (35pts) — price vs momentum disagreement
  *   3. VWAP Weekly (30pts) — distance from fair value
  *
- * Variant A rules:
+ * Variant A rules (Equilibrado config):
  *   - 2 of 3 indicators must agree on direction
  *   - FR contradiction deducts 15pts but doesn't block
- *   - Threshold: 75
- *   - EMA55 trend filter mandatory
+ *   - Threshold: 70
+ *   - EMA55 trend: soft penalty (-10%), not hard block
+ *   - BEAR regime: -15% penalty on LONGs
  *
- * Backtested: PF 1.18, DD 12.9%, 103 trades over 2 years on BTC+SOL+BNB
+ * Equilibrado backtest: PF 0.98, DD ~18%, 370 trades over 2 years on BTC+SOL+BNB
  *
  * Maintains backward-compatible OpportunityScore interface.
  */
@@ -91,7 +92,7 @@ export interface OpportunityScore {
 
 // ─── Constants ───
 
-const SCORE_THRESHOLD = 65;
+const SCORE_THRESHOLD = 70;
 const ATR_SL_MULT = 1.5;
 const ATR_TP1_MULT = 2.25;
 const ATR_TP2_MULT = 4.5;
@@ -225,9 +226,9 @@ export async function scoreOpportunityDual(
     adjustedScore = Math.round(adjustedScore * 0.9);
   }
 
-  // Module 4: penalize LONG in BEAR regime (reduced from 30% to 10%)
+  // Module 4: penalize LONG in BEAR regime (Equilibrado: -15%)
   if (regime === "BEAR" && finalDir === "LONG") {
-    adjustedScore = Math.round(adjustedScore * 0.9);
+    adjustedScore = Math.round(adjustedScore * 0.85);
   }
 
   // SL/TP from ATR

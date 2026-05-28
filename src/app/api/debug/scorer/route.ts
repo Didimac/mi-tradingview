@@ -88,7 +88,7 @@ export async function GET(req: Request) {
       simScore = Math.max(0, simScore);
       const ema55Penalty = (bestDir === "LONG" && price <= ema55Val) || (bestDir === "SHORT" && price >= ema55Val);
       if (ema55Penalty) simScore = Math.round(simScore * 0.9);
-      if (regime === "BEAR" && bestDir === "LONG") simScore = Math.round(simScore * 0.9);
+      if (regime === "BEAR" && bestDir === "LONG") simScore = Math.round(simScore * 0.85);
 
       // Gate analysis
       const gates: string[] = [];
@@ -98,9 +98,9 @@ export async function GET(req: Request) {
       if (Math.max(longCount, shortCount) < 2) gates.push(`BLOCKED: only ${Math.max(longCount, shortCount)} agree (need 2)`);
       if (frContradiction) gates.push("PENALTY: FR contradiction -15pts");
       if (ema55Penalty) gates.push("PENALTY: -10% below EMA55");
-      if (regime === "BEAR" && bestDir === "LONG") gates.push("PENALTY: -10% BEAR regime on LONG");
-      if (simScore < 65) gates.push(`BELOW THRESHOLD: adjusted score ${simScore} < 65`);
-      if (simScore >= 65) gates.push(`✅ SIGNAL ELIGIBLE: adjusted score ${simScore} >= 65`);
+      if (regime === "BEAR" && bestDir === "LONG") gates.push("PENALTY: -15% BEAR regime on LONG");
+      if (simScore < 70) gates.push(`BELOW THRESHOLD: adjusted score ${simScore} < 70`);
+      if (simScore >= 70) gates.push(`✅ SIGNAL ELIGIBLE: adjusted score ${simScore} >= 70`);
       if (gates.length === 0) gates.push("ALL GATES PASSED ✓");
 
       results.push({
