@@ -75,6 +75,9 @@ export interface ScanResult {
 // ─── Constants ───
 
 const BLOB_KEY = "trading-state.json";
+/** Prefix for list() — must match blobs created with addRandomSuffix:true
+ *  e.g. "trading-state-AbCdEf.json" starts with "trading-state" */
+const BLOB_PREFIX = "trading-state";
 const START_CAPITAL = 1000;
 
 function defaultState(): TradingState {
@@ -102,7 +105,7 @@ function defaultState(): TradingState {
 
 export async function loadState(): Promise<TradingState> {
   try {
-    const { blobs } = await list({ prefix: BLOB_KEY });
+    const { blobs } = await list({ prefix: BLOB_PREFIX });
     if (blobs.length === 0) return defaultState();
 
     // Pick the newest blob (in case multiple exist during write-then-cleanup)
@@ -136,7 +139,7 @@ export async function saveState(state: TradingState): Promise<void> {
     });
 
     // 2. THEN CLEANUP — delete all old blobs (not the one we just wrote)
-    const { blobs } = await list({ prefix: BLOB_KEY });
+    const { blobs } = await list({ prefix: BLOB_PREFIX });
     const oldBlobs = blobs.filter((b) => b.url !== newBlob.url);
     if (oldBlobs.length > 0) {
       await del(oldBlobs.map((b) => b.url));
