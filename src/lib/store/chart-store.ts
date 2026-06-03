@@ -11,7 +11,8 @@ export type IndicatorKey =
   | "ema200"
   | "rsi"
   | "macd"
-  | "volume";
+  | "volume"
+  | "ssl";
 
 export type DrawingTool = "cursor" | "hline" | "measure" | "eraser";
 
@@ -29,6 +30,9 @@ export interface IndicatorConfig {
   macdFast: number;
   macdSlow: number;
   macdSignal: number;
+  sslBaseline: number;
+  sslRsiLen: number;
+  sslRsiSmooth: number;
 }
 
 export const DEFAULT_CONFIG: IndicatorConfig = {
@@ -39,6 +43,9 @@ export const DEFAULT_CONFIG: IndicatorConfig = {
   macdFast: 12,
   macdSlow: 26,
   macdSignal: 9,
+  sslBaseline: 65,
+  sslRsiLen: 35,
+  sslRsiSmooth: 5,
 };
 
 export const INDICATOR_COLORS: Record<IndicatorKey, string> = {
@@ -48,6 +55,7 @@ export const INDICATOR_COLORS: Record<IndicatorKey, string> = {
   rsi: "#ab47bc",
   macd: "#2962ff",
   volume: "#787b86",
+  ssl: "#00bcd4",
 };
 
 export const DEFAULT_WATCHLIST = [
@@ -127,6 +135,7 @@ export const useChartStore = create<ChartState>()(
         rsi: true,
         macd: false,
         volume: true,
+        ssl: false,
       },
       hidden: {
         ema20: false,
@@ -135,6 +144,7 @@ export const useChartStore = create<ChartState>()(
         rsi: false,
         macd: false,
         volume: false,
+        ssl: false,
       },
       config: { ...DEFAULT_CONFIG },
       watchlist: DEFAULT_WATCHLIST,

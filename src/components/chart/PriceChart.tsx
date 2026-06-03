@@ -3,18 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createChart,
+  createSeriesMarkers,
   CandlestickSeries,
   LineSeries,
   HistogramSeries,
   CrosshairMode,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type IPriceLine,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { fetchKlines, fetchKlinesBefore } from "@/lib/binance/rest";
 import { getBinanceWS } from "@/lib/binance/ws";
-import { ema, rsi, macd } from "@/lib/indicators";
+import { ema, rsi, macd, sslHybrid, sslStrategy } from "@/lib/indicators";
 import type { Candle, Timeframe } from "@/lib/binance/types";
 import {
   INDICATOR_COLORS,
@@ -106,6 +108,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const macdRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdSignalRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdHistRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const sslUpRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const sslDownRef = useRef<ISeriesApi<"Line"> | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sslMarkersRef = useRef<ISeriesMarkersPluginApi<any> | null>(null);
   const candlesRef = useRef<Candle[]>([]);
   const priceLinesMapRef = useRef<Map<string, IPriceLine>>(new Map());
   const isFetchingMoreRef = useRef(false);
@@ -352,6 +358,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
       macdRef.current = null;
       macdSignalRef.current = null;
       macdHistRef.current = null;
+      sslUpRef.current = null;
+      sslDownRef.current = null;
+      if (sslMarkersRef.current) { sslMarkersRef.current.detach(); sslMarkersRef.current = null; }
     };
   }, []);
 
@@ -492,6 +501,41 @@ export function PriceChart({ symbol, timeframe }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [indicators.macd, indicators.rsi]);
 
+  // SSL Hybrid lines + markers
+  useEffect(() => {
+    if (!chartRef.current) return;
+    if (indicators.ssl && !sslUpRef.current) {
+      sslUpRef.current = chartRef.current.addSeries(LineSeries, {
+        color: "#00bcd4",
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      sslDownRef.current = chartRef.current.addSeries(LineSeries, {
+        color: "#ef5350",
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      // Create markers plugin for BUY/SELL signals
+      if (candleSeriesRef.current && !sslMarkersRef.current) {
+        sslMarkersRef.current = createSeriesMarkers(candleSeriesRef.current, []);
+      }
+      updateSSL();
+    } else if (!indicators.ssl && sslUpRef.current && chartRef.current) {
+      if (sslUpRef.current) chartRef.current.removeSeries(sslUpRef.current);
+      if (sslDownRef.current) chartRef.current.removeSeries(sslDownRef.current);
+      sslUpRef.current = null;
+      sslDownRef.current = null;
+      // Clear markers
+      if (sslMarkersRef.current) {
+        sslMarkersRef.current.detach();
+        sslMarkersRef.current = null;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [indicators.ssl]);
+
   // Visibility — eye toggle (hidden state) + enabled state combined
   useEffect(() => {
     const v = (key: IndicatorKey) => indicators[key] && !hidden[key];
@@ -505,6 +549,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
     if (macdSignalRef.current) macdSignalRef.current.applyOptions({ visible: v("macd") });
     if (macdHistRef.current) macdHistRef.current.applyOptions({ visible: v("macd") });
     if (volumeSeriesRef.current) volumeSeriesRef.current.applyOptions({ visible: v("volume") });
+    if (sslUpRef.current) sslUpRef.current.applyOptions({ visible: v("ssl") });
+    if (sslDownRef.current) sslDownRef.current.applyOptions({ visible: v("ssl") });
   }, [indicators, hidden]);
 
   // Recompute indicators when config changes (periods)
@@ -519,6 +565,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
   useEffect(() => {
     updateMACD();
   }, [config.macdFast, config.macdSlow, config.macdSignal]);
+
+  useEffect(() => {
+    updateSSL();
+  }, [config.sslBaseline, config.sslRsiLen, config.sslRsiSmooth]);
 
   // Sync price lines from store to the candle series
   useEffect(() => {
@@ -687,6 +737,51 @@ export function PriceChart({ symbol, timeframe }: Props) {
     }));
   }
 
+  function updateSSL() {
+    const c = candlesRef.current;
+    if (c.length === 0 || !sslUpRef.current || !sslDownRef.current) return;
+    const cfg = configRef.current;
+
+    // SSL lines
+    const sslData = sslHybrid(c, cfg.sslBaseline);
+    sslUpRef.current.setData(
+      sslData.map((p) => ({ time: p.time as UTCTimestamp, value: p.sslUp })),
+    );
+    sslDownRef.current.setData(
+      sslData.map((p) => ({ time: p.time as UTCTimestamp, value: p.sslDown })),
+    );
+
+    // Color SSL lines per-bar based on direction
+    // Update sslDown color based on direction
+    sslDownRef.current.setData(
+      sslData.map((p) => ({
+        time: p.time as UTCTimestamp,
+        value: p.sslDown,
+        color: p.direction > 0 ? "#ef5350" : "#00bcd4",
+      })),
+    );
+    sslUpRef.current.setData(
+      sslData.map((p) => ({
+        time: p.time as UTCTimestamp,
+        value: p.sslUp,
+        color: p.direction > 0 ? "#00bcd4" : "#ef5350",
+      })),
+    );
+
+    // BUY/SELL markers from unified strategy
+    const signals = sslStrategy(c, cfg.ema200, cfg.sslBaseline, cfg.sslRsiLen, cfg.sslRsiSmooth);
+    if (sslMarkersRef.current) {
+      const markers = signals.map((s) => ({
+        time: s.time as UTCTimestamp,
+        position: s.type === "BUY" ? ("belowBar" as const) : ("aboveBar" as const),
+        color: s.type === "BUY" ? "#26a69a" : "#ef5350",
+        shape: s.type === "BUY" ? ("arrowUp" as const) : ("arrowDown" as const),
+        text: s.type,
+      }));
+      sslMarkersRef.current.setMarkers(markers);
+    }
+  }
+
   // Lazy-load older candles (called from the logical range handler)
   async function loadOlderCandles(oldestMs: number) {
     try {
@@ -741,6 +836,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       updateEMAs();
       updateRSI();
       updateMACD();
+      updateSSL();
 
       // Restore viewport: shift logical range by the prepended count so the
       // user keeps seeing the same candles, but can now scroll further left.
@@ -800,6 +896,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         updateEMAs();
         updateRSI();
         updateMACD();
+        updateSSL();
         chartRef.current?.timeScale().fitContent();
         requestAnimationFrame(() => recomputePaneOffsets());
 
@@ -845,6 +942,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
             updateEMAs();
             updateRSI();
             updateMACD();
+            updateSSL();
             const prev = arr[arr.length - 2] ?? lastCandle;
             setLastPrice({
               value: k.close,
@@ -1018,6 +1116,16 @@ export function PriceChart({ symbol, timeframe }: Props) {
               onToggleHide={() => toggleHidden("ema200")}
               onSettings={() => setSettingsTarget("ema200")}
               onRemove={() => removeIndicator("ema200")}
+            />
+          )}
+          {indicators.ssl && (
+            <IndicatorPill
+              name={`SSL (${config.sslBaseline})`}
+              color={INDICATOR_COLORS.ssl}
+              hidden={hidden.ssl}
+              onToggleHide={() => toggleHidden("ssl")}
+              onSettings={() => setSettingsTarget("ssl")}
+              onRemove={() => removeIndicator("ssl")}
             />
           )}
           {indicators.volume && (

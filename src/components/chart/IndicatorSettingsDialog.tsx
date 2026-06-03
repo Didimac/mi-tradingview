@@ -22,6 +22,7 @@ const TITLES: Record<IndicatorKey, string> = {
   rsi: "RSI",
   macd: "MACD",
   volume: "Volumen",
+  ssl: "SSL Hybrid + RSI Primet",
 };
 
 export function IndicatorSettingsDialog() {
@@ -81,6 +82,9 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
     macdFast: config.macdFast,
     macdSlow: config.macdSlow,
     macdSignal: config.macdSignal,
+    sslBaseline: config.sslBaseline,
+    sslRsiLen: config.sslRsiLen,
+    sslRsiSmooth: config.sslRsiSmooth,
   });
 
   useEffect(() => {
@@ -92,6 +96,9 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
       macdFast: config.macdFast,
       macdSlow: config.macdSlow,
       macdSignal: config.macdSignal,
+      sslBaseline: config.sslBaseline,
+      sslRsiLen: config.sslRsiLen,
+      sslRsiSmooth: config.sslRsiSmooth,
     });
   }, [config, target]);
 
@@ -105,6 +112,12 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
         macdFast: clamp(draft.macdFast, 2, 100),
         macdSlow: clamp(draft.macdSlow, 2, 200),
         macdSignal: clamp(draft.macdSignal, 2, 100),
+      });
+    else if (target === "ssl")
+      onSave({
+        sslBaseline: clamp(draft.sslBaseline, 10, 200),
+        sslRsiLen: clamp(draft.sslRsiLen, 5, 100),
+        sslRsiSmooth: clamp(draft.sslRsiSmooth, 2, 20),
       });
     else if (target === "volume") onSave({});
   }
@@ -141,6 +154,25 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
             label="Señal"
             value={draft.macdSignal}
             onChange={(n) => setDraft((d) => ({ ...d, macdSignal: n }))}
+          />
+        </div>
+      )}
+      {target === "ssl" && (
+        <div className="flex flex-col gap-2">
+          <Field
+            label="SSL Base Line"
+            value={draft.sslBaseline}
+            onChange={(n) => setDraft((d) => ({ ...d, sslBaseline: n }))}
+          />
+          <Field
+            label="RSI Primet Longitud"
+            value={draft.sslRsiLen}
+            onChange={(n) => setDraft((d) => ({ ...d, sslRsiLen: n }))}
+          />
+          <Field
+            label="RSI Suavizado"
+            value={draft.sslRsiSmooth}
+            onChange={(n) => setDraft((d) => ({ ...d, sslRsiSmooth: n }))}
           />
         </div>
       )}
