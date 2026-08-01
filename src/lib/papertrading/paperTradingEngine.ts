@@ -400,7 +400,7 @@ export function autoOpenTrade(params: {
 // WebSocket price monitor — call once from a top-level component
 // -----------------------------------------------------------------
 
-const MONITORED_PAIRS = ["BTCUSDT", "SOLUSDT", "BNBUSDT"];
+const MONITORED_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT"];
 let monitorUnsub: (() => void) | null = null;
 
 export function startPriceMonitor() {

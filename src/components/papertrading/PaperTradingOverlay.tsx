@@ -101,11 +101,11 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
           if (data.lastScanTime > 0) {
             setLastScan(new Date(data.lastScanTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
           }
-          // Sync server state into local Zustand store (server is source of truth)
+          // Sync capital and history from server (server is source of truth for trades)
+          // autoMode is NOT synced back — local + POST is authoritative
           const store = usePaperTrading.getState();
-          if (data.capital !== store.capital || data.autoMode !== store.autoMode) {
-            if (data.capital) usePaperTrading.setState({ capital: data.capital });
-            if (typeof data.autoMode === "boolean") usePaperTrading.setState({ autoMode: data.autoMode });
+          if (data.capital && data.capital !== store.capital) {
+            usePaperTrading.setState({ capital: data.capital });
           }
           // Sync positions from server
           if (data.positions) {
