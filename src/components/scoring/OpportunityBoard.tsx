@@ -25,19 +25,21 @@ import { TrendingUp, TrendingDown, Minus, RefreshCw, BarChart3, ChevronUp, Chevr
 const SCORE_CANCEL_THRESHOLD = 40;
 
 const PAIRS = [
-  "BTCUSDT", "SOLUSDT", "BNBUSDT",
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
+  "XRPUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT",
 ];
 
 export type { OpportunityScore };
 
 function ScoreBar({ score }: { score: number }) {
+  const pct = Math.min(100, (score / 125) * 100);
   const color =
-    score >= 70 ? "bg-bull" : score >= 50 ? "bg-yellow-500" : "bg-bear";
+    score >= 60 ? "bg-bull" : score >= 40 ? "bg-yellow-500" : "bg-bear";
   return (
     <div className="h-1.5 w-12 rounded-full bg-border/40 overflow-hidden">
       <div
         className={cn("h-full rounded-full transition-all duration-500", color)}
-        style={{ width: `${score}%` }}
+        style={{ width: `${pct}%` }}
       />
     </div>
   );
@@ -85,11 +87,8 @@ export function useOpportunityScores() {
 
       const results = await Promise.all(
         PAIRS.map(async (symbol) => {
-          const [c1h, c4h] = await Promise.all([
-            fetchKlines(symbol, "1h", 100),
-            fetchKlines(symbol, "4h", 100),
-          ]);
-          return scoreOpportunityDual(symbol, c1h, c4h, btcRegime, capital);
+          const c1h = await fetchKlines(symbol, "1h", 300);
+          return scoreOpportunityDual(symbol, c1h, [], btcRegime, capital);
         }),
       );
       results.sort((a, b) => b.score - a.score);
@@ -98,10 +97,10 @@ export function useOpportunityScores() {
 
       const currentHigh = new Set<string>();
       for (const r of results) {
-        if (r.score >= 70) {
+        if (r.score >= 60) {
           currentHigh.add(r.symbol);
           if (!prevHighRef.current.has(r.symbol)) {
-            addToast("signal", `${r.symbol.replace("USDT", "")} score ${r.score}/100 ${r.direction}`);
+            addToast("signal", `${r.symbol.replace("USDT", "")} score ${r.score}/125 ${r.direction}`);
           }
         }
 
@@ -195,13 +194,14 @@ export function OpportunityBoard() {
 
       {/* Table header */}
       {!panelState.minimized && (
-      <div className="grid grid-cols-[60px_40px_20px_28px_28px_28px_55px_55px_55px_55px] gap-0.5 px-2 py-1 text-[8px] uppercase tracking-wider text-muted-foreground/50 border-b border-border/20">
+      <div className="grid grid-cols-[55px_35px_18px_26px_26px_26px_26px_50px_50px_50px_50px] gap-0.5 px-2 py-1 text-[8px] uppercase tracking-wider text-muted-foreground/50 border-b border-border/20">
         <span>Par</span>
         <span className="text-right">Score</span>
         <span className="text-center">Dir</span>
         <span className="text-center">FR</span>
         <span className="text-center">Div</span>
         <span className="text-center">VW</span>
+        <span className="text-center">SSL</span>
         <span className="text-right">Lotaje</span>
         <span className="text-right">SL</span>
         <span className="text-right">TP1</span>
@@ -215,7 +215,7 @@ export function OpportunityBoard() {
         {scores.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <span className="text-[10px] text-muted-foreground/40">
-              {loading ? "Analizando 1H + 4H..." : "Sin datos"}
+              {loading ? "Analizando 8 pares..." : "Sin datos"}
             </span>
           </div>
         )}
@@ -224,7 +224,7 @@ export function OpportunityBoard() {
             key={s.symbol}
             onClick={() => handleRowClick(s)}
             className={cn(
-              "grid grid-cols-[60px_40px_20px_28px_28px_28px_55px_55px_55px_55px] gap-0.5 w-full px-2 py-1 items-center text-left transition-colors hover:bg-border/20",
+              "grid grid-cols-[55px_35px_18px_26px_26px_26px_26px_50px_50px_50px_50px] gap-0.5 w-full px-2 py-1 items-center text-left transition-colors hover:bg-border/20",
               s.symbol === currentSymbol && "bg-border/30",
             )}
           >
@@ -240,7 +240,7 @@ export function OpportunityBoard() {
             <span
               className={cn(
                 "text-right text-[11px] font-mono font-bold tabular-nums",
-                s.score >= 70 ? "text-bull" : s.score >= 50 ? "text-yellow-500" : "text-muted-foreground",
+                s.score >= 60 ? "text-bull" : s.score >= 40 ? "text-yellow-500" : "text-muted-foreground",
               )}
             >
               {s.score}
@@ -251,6 +251,7 @@ export function OpportunityBoard() {
             <span className="flex justify-center"><ScoreCell value={s.components.fundingRate} /></span>
             <span className="flex justify-center"><ScoreCell value={s.components.rsiDivergence} /></span>
             <span className="flex justify-center"><ScoreCell value={s.components.vwapWeekly} /></span>
+            <span className="flex justify-center"><ScoreCell value={s.components.ssl} /></span>
             <span className="text-right text-[9px] font-mono text-muted-foreground tabular-nums">
               {s.positionUSDT > 0 ? `$${s.positionUSDT.toFixed(0)}` : "–"}
             </span>

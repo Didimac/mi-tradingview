@@ -245,6 +245,16 @@ export const useChartStore = create<ChartState>()(
         watchlist: s.watchlist,
         panels: s.panels,
       }),
+      merge: (persisted, current) => {
+        const p = persisted as Partial<ChartState>;
+        return {
+          ...current,
+          ...p,
+          config: { ...DEFAULT_CONFIG, ...(p.config ?? {}) },
+          indicators: { ...current.indicators, ...(p.indicators ?? {}) },
+          hidden: { ...current.hidden, ...(p.hidden ?? {}) },
+        };
+      },
     },
   ),
 );
