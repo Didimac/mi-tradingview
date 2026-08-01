@@ -1,21 +1,18 @@
 /**
- * OpportunityScorer — SmartScorer v2 Variant A
+ * OpportunityScorer — SmartScorer v3
  *
- * Replaces the old 4-component scorer (EMA/RSI/Vol/ATR) with:
+ * Four scoring modules:
  *   1. Funding Rate (35pts) — crowd positioning via Binance Futures
  *   2. RSI Divergence (35pts) — price vs momentum disagreement
  *   3. VWAP Weekly (30pts) — distance from fair value
+ *   4. SSL Hybrid + RSI Primet (25pts) — trend confirmation via SSL channel
  *
- * Variant A rules (Equilibrado config):
- *   - 2 of 3 indicators must agree on direction
+ * Max score: 125. Threshold: 60.
+ * Rules:
+ *   - 2 of 4 indicators must agree on direction
  *   - FR contradiction deducts 15pts but doesn't block
- *   - Threshold: 70
  *   - EMA55 trend: soft penalty (-10%), not hard block
  *   - BEAR regime: -15% penalty on LONGs
- *
- * Equilibrado backtest: PF 0.98, DD ~18%, 370 trades over 2 years on BTC+SOL+BNB
- *
- * Maintains backward-compatible OpportunityScore interface.
  */
 
 import type { Candle } from "@/lib/binance/types";
@@ -34,8 +31,16 @@ import {
   type VWAPComponent,
   type Direction,
 } from "./smartScorer";
+import { sslHybrid, rsiPrimet } from "@/lib/indicators";
 
 // ─── Public types (backward compatible) ───
+
+export interface SSLComponent {
+  sslDirection: 1 | -1 | 0;
+  rsiPrimetGreen: boolean;
+  points: number;
+  direction: Direction;
+}
 
 export interface ScoreComponents {
   /** Funding Rate points (0-35) */
@@ -44,6 +49,8 @@ export interface ScoreComponents {
   rsiDivergence: number;
   /** VWAP Weekly points (0-30) */
   vwapWeekly: number;
+  /** SSL Hybrid + RSI Primet points (0-25) */
+  ssl: number;
   /** Legacy fields kept for UI compat */
   ema: number;
   rsi: number;
@@ -63,6 +70,7 @@ export interface SmartComponents {
   fundingRate: FundingRateComponent;
   rsiDivergence: RSIDivergenceComponent;
   vwapWeekly: VWAPComponent;
+  ssl: SSLComponent;
 }
 
 export interface OpportunityScore {
@@ -92,7 +100,7 @@ export interface OpportunityScore {
 
 // ─── Constants ───
 
-const SCORE_THRESHOLD = 70;
+const SCORE_THRESHOLD = 60;
 const ATR_SL_MULT = 1.5;
 const ATR_TP1_MULT = 2.25;
 const ATR_TP2_MULT = 4.5;
@@ -122,10 +130,41 @@ function mapEntryZoneType(type: "pullback" | "momentum" | "late"): EntryZone["ty
 
 // ─── Main scoring function ───
 
+function scoreSSL(candles: Candle[]): SSLComponent {
+  const none: SSLComponent = { sslDirection: 0, rsiPrimetGreen: false, points: 0, direction: "NEUTRAL" };
+  if (candles.length < 70) return none;
+
+  const sslData = sslHybrid(candles, 65);
+  const rsiData = rsiPrimet(candles, 35, 5);
+
+  if (sslData.length === 0 || rsiData.length === 0) return none;
+
+  const lastSsl = sslData[sslData.length - 1];
+  const lastRsi = rsiData[rsiData.length - 1];
+
+  const sslDir = lastSsl.direction;
+  const rsiGreen = lastRsi.isGreen;
+
+  if (sslDir === 1 && rsiGreen) {
+    return { sslDirection: 1, rsiPrimetGreen: true, points: 25, direction: "LONG" };
+  }
+  if (sslDir === -1 && !rsiGreen) {
+    return { sslDirection: -1, rsiPrimetGreen: false, points: 25, direction: "SHORT" };
+  }
+  if (sslDir === 1 || rsiGreen) {
+    return { sslDirection: sslDir, rsiPrimetGreen: rsiGreen, points: 10, direction: "LONG" };
+  }
+  if (sslDir === -1 || !rsiGreen) {
+    return { sslDirection: sslDir, rsiPrimetGreen: rsiGreen, points: 10, direction: "SHORT" };
+  }
+
+  return none;
+}
+
 export async function scoreOpportunityDual(
   symbol: string,
   candles1H: Candle[],
-  _candles4H: Candle[], // kept for interface compat, not used in SmartScorer
+  _candles4H: Candle[],
   regime: BtcRegime,
   capital: number,
 ): Promise<OpportunityScore> {
@@ -138,8 +177,7 @@ export async function scoreOpportunityDual(
   const price = candles[last].close;
   const closes = candles.map((c) => c.close);
 
-  // Compute indicators
-  const rsi = calcRSI(closes);
+  const rsiValues = calcRSI(closes);
   const atr = calcATR(candles);
   const ema21 = calcEMA(closes, 21);
   const ema55 = calcEMA(closes, 55);
@@ -152,20 +190,25 @@ export async function scoreOpportunityDual(
     return emptyScore(symbol, regime);
   }
 
-  // 1. Funding Rate (async fetch from Binance Futures)
+  // 1. Funding Rate
   const frValue = await fetchFundingRate(symbol);
   const frComponent = scoreFundingRate(frValue);
 
   // 2. RSI Divergence
-  const divComponent = detectRSIDivergence(candles, rsi, last);
+  const divComponent = detectRSIDivergence(candles, rsiValues, last);
 
   // 3. Weekly VWAP
   const vwap = calcWeeklyVWAP(candles, last);
   const vwapComponent = scoreVWAP(price, vwap);
 
-  // Directional agreement (Variant A: 2 of 3 must agree)
-  const dirs: Direction[] = [frComponent.direction, divComponent.direction, vwapComponent.direction]
-    .filter((d) => d !== "NEUTRAL");
+  // 4. SSL Hybrid + RSI Primet
+  const sslComponent = scoreSSL(candles);
+
+  // Directional agreement (2 of 4 must agree)
+  const dirs: Direction[] = [
+    frComponent.direction, divComponent.direction,
+    vwapComponent.direction, sslComponent.direction,
+  ].filter((d) => d !== "NEUTRAL");
   const longCount = dirs.filter((d) => d === "LONG").length;
   const shortCount = dirs.filter((d) => d === "SHORT").length;
 
@@ -185,29 +228,25 @@ export async function scoreOpportunityDual(
     allAgree = false;
   }
 
-  // Variant A: need at least 2 agreeing
   if (agreeCount < 2) {
     return emptyScore(symbol, regime);
   }
 
-  // Calculate raw score
-  let rawScore = frComponent.points + divComponent.points + vwapComponent.points;
+  // Raw score (max 125)
+  let rawScore = frComponent.points + divComponent.points + vwapComponent.points + sslComponent.points;
 
-  // Variant A: FR contradiction deducts 15pts but doesn't block
+  // FR contradiction deducts 15pts
   if (frComponent.direction !== "NEUTRAL" && frComponent.direction !== finalDir) {
     rawScore -= 15;
   }
 
   const scoreFinal = Math.max(0, rawScore);
 
-  // EMA55 trend context (soft penalty instead of hard block)
-  // In bear markets, counter-trend bounces are common — don't block, just penalize
   let ema55Penalty = false;
   if ((finalDir === "LONG" && price <= ema55Val) || (finalDir === "SHORT" && price >= ema55Val)) {
     ema55Penalty = true;
   }
 
-  // Entry zone
   const rawZone = calcEntryZoneRaw(price, ema21Val, atrVal, finalDir);
   const entryZone: EntryZone = {
     ideal: rawZone.ideal,
@@ -215,18 +254,13 @@ export async function scoreOpportunityDual(
     type: mapEntryZoneType(rawZone.type),
   };
 
-  // Late entry penalty
   let adjustedScore = scoreFinal;
   if (rawZone.type === "late") {
-    adjustedScore = Math.round(adjustedScore * 0.8);
+    adjustedScore = Math.round(adjustedScore * 0.85);
   }
-
-  // EMA55 counter-trend penalty (-10%)
   if (ema55Penalty) {
     adjustedScore = Math.round(adjustedScore * 0.9);
   }
-
-  // Module 4: penalize LONG in BEAR regime (Equilibrado: -15%)
   if (regime === "BEAR" && finalDir === "LONG") {
     adjustedScore = Math.round(adjustedScore * 0.85);
   }
@@ -243,29 +277,28 @@ export async function scoreOpportunityDual(
     takeProfit2 = price - ATR_TP2_MULT * atrVal;
   }
 
-  // Position sizing
   const riskAmount = capital * RISK_PER_TRADE;
   const slDist = Math.abs(price - stopLoss);
   const qty = slDist > 0 ? riskAmount / slDist : 0;
   const positionUSDT = qty * price;
 
-  // Build reason string
   const reasons: string[] = [];
   if (frComponent.points > 0) reasons.push(`FR ${(frComponent.value * 100).toFixed(3)}%`);
   if (divComponent.points > 0) reasons.push(`Div ${divComponent.type}`);
   if (vwapComponent.points > 0) reasons.push(`VWAP ${vwapComponent.distancePct.toFixed(2)}%`);
+  if (sslComponent.points > 0) reasons.push(`SSL ${sslComponent.points}pts`);
 
   return {
     symbol,
     score: adjustedScore,
-    score1H: adjustedScore, // SmartScorer doesn't split by timeframe
+    score1H: adjustedScore,
     score4H: adjustedScore,
     direction: adjustedScore >= SCORE_THRESHOLD ? finalDir : "NEUTRAL",
     components: {
       fundingRate: frComponent.points,
       rsiDivergence: divComponent.points,
       vwapWeekly: vwapComponent.points,
-      // Legacy fields (mapped from new indicators)
+      ssl: sslComponent.points,
       ema: frComponent.points,
       rsi: divComponent.points,
       volume: vwapComponent.points,
@@ -275,6 +308,7 @@ export async function scoreOpportunityDual(
       fundingRate: frComponent,
       rsiDivergence: divComponent,
       vwapWeekly: vwapComponent,
+      ssl: sslComponent,
     },
     reason: reasons.length > 0 ? reasons.join(" | ") : "Sin senales",
     allAgree,
@@ -305,11 +339,12 @@ function emptyScore(symbol: string, regime: BtcRegime): OpportunityScore {
     score1H: 0,
     score4H: 0,
     direction: "NEUTRAL",
-    components: { fundingRate: 0, rsiDivergence: 0, vwapWeekly: 0, ema: 0, rsi: 0, volume: 0, atr: 0 },
+    components: { fundingRate: 0, rsiDivergence: 0, vwapWeekly: 0, ssl: 0, ema: 0, rsi: 0, volume: 0, atr: 0 },
     smartComponents: {
       fundingRate: { value: 0, points: 0, direction: "NEUTRAL" },
       rsiDivergence: { type: "none", points: 0, direction: "NEUTRAL" },
       vwapWeekly: { vwap: 0, distancePct: 0, points: 0, direction: "NEUTRAL" },
+      ssl: { sslDirection: 0, rsiPrimetGreen: false, points: 0, direction: "NEUTRAL" },
     },
     reason: "Sin senales",
     allAgree: false,

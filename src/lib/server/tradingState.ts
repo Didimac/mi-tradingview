@@ -50,7 +50,9 @@ export interface ServerTrade {
 export interface TradingState {
   capital: number;
   startCapital: number;
+  /** @deprecated Use positions[] — kept for backward compat on load */
   position: ServerPosition | null;
+  positions: ServerPosition[];
   history: ServerTrade[];
   autoMode: boolean;
   lastSignalTimes: Record<string, number>;  // symbol → timestamp ms
@@ -58,12 +60,15 @@ export interface TradingState {
   lastScanResults: ScanResult[];             // latest scores for UI
 }
 
+const MAX_POSITIONS = 3;
+
 export interface ScanResult {
   symbol: string;
+  timeframe?: string;
   score: number;
   direction: "LONG" | "SHORT" | "NEUTRAL";
   regime: "BULL" | "BEAR";
-  components: { fundingRate: number; rsiDivergence: number; vwapWeekly: number };
+  components: { fundingRate: number; rsiDivergence: number; vwapWeekly: number; ssl?: number };
   entry: number;
   stopLoss: number;
   takeProfit1: number;
@@ -85,6 +90,7 @@ function defaultState(): TradingState {
     capital: START_CAPITAL,
     startCapital: START_CAPITAL,
     position: null,
+    positions: [],
     history: [],
     autoMode: false,
     lastSignalTimes: {},
@@ -119,9 +125,13 @@ export async function loadState(): Promise<TradingState> {
 
     const data = await res.json();
 
-    // Safety check: never load a default-looking state if we had a real state before
-    // (protects against corrupt writes)
     const loaded = { ...defaultState(), ...data } as TradingState;
+    // Migrate old single-position format to positions array
+    if (!loaded.positions) loaded.positions = [];
+    if (loaded.position && loaded.positions.length === 0) {
+      loaded.positions = [loaded.position];
+    }
+    loaded.position = loaded.positions[0] ?? null;
     return loaded;
   } catch (e) {
     console.error("[TradingState] Failed to load:", e);
@@ -131,7 +141,8 @@ export async function loadState(): Promise<TradingState> {
 
 export async function saveState(state: TradingState): Promise<void> {
   try {
-    // 1. WRITE FIRST — new blob with random suffix (always creates new URL)
+    // Keep position in sync with positions array for backward compat
+    state.position = state.positions[0] ?? null;
     const newBlob = await put(BLOB_KEY, JSON.stringify(state), {
       access: "public",
       addRandomSuffix: true,       // ensures unique URL, no CDN collision
@@ -167,9 +178,10 @@ export function openPosition(
     reason: string;
   },
 ): { opened: boolean; state: TradingState } {
-  if (state.position) return { opened: false, state };
+  if (state.positions.length >= MAX_POSITIONS) return { opened: false, state };
+  if (state.positions.some((p) => p.symbol === params.symbol)) return { opened: false, state };
 
-  const riskAmt = state.capital * 0.015; // 1.5% risk
+  const riskAmt = state.capital * 0.015;
   const stopDist = Math.abs(params.price - params.sl);
   if (stopDist === 0) return { opened: false, state };
   const qty = riskAmt / stopDist;
@@ -189,56 +201,60 @@ export function openPosition(
     originalQty: qty,
   };
 
+  const positions = [...state.positions, pos];
   return {
     opened: true,
-    state: { ...state, position: pos },
+    state: { ...state, positions, position: positions[0] },
   };
 }
 
-/**
- * Check current price against open position SL/TP.
- * Uses candle high/low for more accurate detection in 15-min intervals.
- */
+export interface PriceActionResult {
+  event: "none" | "tp1_partial" | "tp2_close" | "sl_close";
+  state: TradingState;
+  pnl?: number;
+  pnlPct?: number;
+  symbol?: string;
+}
+
 export function checkPriceAction(
   state: TradingState,
   high: number,
   low: number,
   close: number,
-): { event: "none" | "tp1_partial" | "tp2_close" | "sl_close"; state: TradingState; pnl?: number; pnlPct?: number } {
-  const pos = state.position;
+  symbol?: string,
+): PriceActionResult {
+  const pos = symbol
+    ? state.positions.find((p) => p.symbol === symbol)
+    : state.positions[0];
   if (!pos) return { event: "none", state };
 
   if (pos.side === "long") {
-    // SL check
     if (low <= pos.sl) {
-      return closeFull(state, pos.sl, "Stop Loss");
+      return closeFullMulti(state, pos, pos.sl, "Stop Loss");
     }
-    // TP1 partial
     if (!pos.partialClosed && high >= pos.tp1) {
-      return partialClose(state);
+      return partialCloseMulti(state, pos);
     }
-    // TP2 full
     if (pos.partialClosed && high >= pos.tp2) {
-      return closeFull(state, pos.tp2, "Take Profit 2");
+      return closeFullMulti(state, pos, pos.tp2, "Take Profit 2");
     }
   } else {
-    // SHORT
     if (high >= pos.sl) {
-      return closeFull(state, pos.sl, "Stop Loss");
+      return closeFullMulti(state, pos, pos.sl, "Stop Loss");
     }
     if (!pos.partialClosed && low <= pos.tp1) {
-      return partialClose(state);
+      return partialCloseMulti(state, pos);
     }
     if (pos.partialClosed && low <= pos.tp2) {
-      return closeFull(state, pos.tp2, "Take Profit 2");
+      return closeFullMulti(state, pos, pos.tp2, "Take Profit 2");
     }
   }
 
+  void close;
   return { event: "none", state };
 }
 
-function partialClose(state: TradingState): { event: "tp1_partial"; state: TradingState; pnl: number; pnlPct: number } {
-  const pos = state.position!;
+function partialCloseMulti(state: TradingState, pos: ServerPosition): PriceActionResult {
   const closedQty = pos.originalQty * 0.5;
   const pnlPerUnit = pos.side === "long"
     ? pos.tp1 - pos.entryPrice
@@ -246,29 +262,34 @@ function partialClose(state: TradingState): { event: "tp1_partial"; state: Tradi
   const pnl = pnlPerUnit * closedQty;
   const pnlPct = (pnl / state.capital) * 100;
 
+  const updatedPos: ServerPosition = {
+    ...pos,
+    qty: pos.qty - closedQty,
+    sl: pos.entryPrice,
+    partialClosed: true,
+  };
+  const positions = state.positions.map((p) => p.id === pos.id ? updatedPos : p);
+
   return {
     event: "tp1_partial",
     pnl,
     pnlPct,
+    symbol: pos.symbol,
     state: {
       ...state,
       capital: state.capital + pnl,
-      position: {
-        ...pos,
-        qty: pos.qty - closedQty,
-        sl: pos.entryPrice, // SL → breakeven
-        partialClosed: true,
-      },
+      positions,
+      position: positions[0] ?? null,
     },
   };
 }
 
-function closeFull(
+function closeFullMulti(
   state: TradingState,
+  pos: ServerPosition,
   exitPrice: number,
   exitReason: string,
-): { event: "tp2_close" | "sl_close"; state: TradingState; pnl: number; pnlPct: number } {
-  const pos = state.position!;
+): PriceActionResult {
   const pnlPerUnit = pos.side === "long"
     ? exitPrice - pos.entryPrice
     : pos.entryPrice - exitPrice;
@@ -290,14 +311,18 @@ function closeFull(
     exitReason,
   };
 
+  const positions = state.positions.filter((p) => p.id !== pos.id);
+
   return {
     event: exitReason.includes("Profit") ? "tp2_close" : "sl_close",
     pnl,
     pnlPct,
+    symbol: pos.symbol,
     state: {
       ...state,
       capital: state.capital + pnl,
-      position: null,
+      positions,
+      position: positions[0] ?? null,
       history: [...state.history, trade],
     },
   };

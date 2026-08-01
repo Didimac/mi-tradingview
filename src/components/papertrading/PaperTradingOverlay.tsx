@@ -80,6 +80,11 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
 
   const [serverSync, setServerSync] = useState(false);
   const [lastScan, setLastScan] = useState<string | null>(null);
+  const [serverPositions, setServerPositions] = useState<Array<{
+    id: string; symbol: string; side: "long" | "short"; entryPrice: number;
+    qty: number; sl: number; tp1: number; tp2: number; partialClosed: boolean;
+    originalQty: number; entryTime: number; reason: string;
+  }>>([]);
 
   useEffect(() => {
     startPriceMonitor();
@@ -102,19 +107,17 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
             if (data.capital) usePaperTrading.setState({ capital: data.capital });
             if (typeof data.autoMode === "boolean") usePaperTrading.setState({ autoMode: data.autoMode });
           }
-          // Sync position from server if different
+          // Sync positions from server
+          if (data.positions) {
+            setServerPositions(data.positions);
+          }
           const serverPos = data.position;
           const localPos = store.position;
           if (serverPos && !localPos) {
-            // Server has position, local doesn't → sync
             usePaperTrading.setState({
-              position: {
-                ...serverPos,
-                tp: serverPos.tp1,
-              },
+              position: { ...serverPos, tp: serverPos.tp1 },
             });
           } else if (!serverPos && localPos) {
-            // Server closed position → sync
             usePaperTrading.setState({ position: null });
           }
           if (data.history?.length > store.history.length) {
@@ -344,48 +347,53 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
               )}
             </div>
 
-            {/* Open position */}
-            {showPosition && (
+            {/* Open positions */}
+            {serverPositions.length > 0 && (
+              <div className="px-3 py-2 border-b border-border/20">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <CircleDot size={10} className="text-primary animate-pulse" />
+                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                    Posiciones ({serverPositions.length}/3)
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {serverPositions.map((pos) => (
+                    <div key={pos.id} className="border-b border-border/10 pb-1 last:border-0">
+                      <div className="flex items-center justify-between">
+                        <span className={`text-[11px] font-bold ${pos.side === "long" ? "text-bull" : "text-bear"}`}>
+                          {pos.side === "long" ? <TrendingUp size={9} className="inline mr-0.5" /> : <TrendingDown size={9} className="inline mr-0.5" />}
+                          {pos.side.toUpperCase()} {pos.symbol.replace("USDT", "")}
+                        </span>
+                        <span className="text-[9px] text-muted-foreground/60">
+                          ${formatPrice(pos.entryPrice)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[9px] mt-0.5">
+                        <span className="text-bear">SL {formatPrice(pos.sl)}{pos.partialClosed ? " (BE)" : ""}</span>
+                        <span className="text-bull">TP {formatPrice(pos.tp2)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {showPosition && serverPositions.length === 0 && (
               <div className="px-3 py-2 border-b border-border/20">
                 <div className="flex items-center gap-1.5 mb-1.5">
                   <CircleDot size={10} className="text-primary animate-pulse" />
-                  <span
-                    className={`text-[11px] font-bold ${
-                      position.side === "long" ? "text-bull" : "text-bear"
-                    }`}
-                  >
-                    {position.side === "long" ? (
-                      <TrendingUp size={10} className="inline mr-1" />
-                    ) : (
-                      <TrendingDown size={10} className="inline mr-1" />
-                    )}
+                  <span className={`text-[11px] font-bold ${position.side === "long" ? "text-bull" : "text-bear"}`}>
+                    {position.side === "long" ? <TrendingUp size={10} className="inline mr-1" /> : <TrendingDown size={10} className="inline mr-1" />}
                     {position.side.toUpperCase()} {position.symbol.replace("USDT", "")}
                   </span>
                 </div>
-
                 <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
                   <span className="text-muted-foreground">Entrada</span>
-                  <span className="text-right font-mono text-foreground">
-                    {formatPrice(position.entryPrice)}
-                  </span>
-                  <span className="text-muted-foreground">SL{position.partialClosed ? " (BE)" : ""}</span>
-                  <span className="text-right font-mono text-bear">
-                    {formatPrice(position.sl)}
-                  </span>
-                  <span className="text-muted-foreground">TP1{position.partialClosed ? " ✓" : ""}</span>
-                  <span className={`text-right font-mono ${position.partialClosed ? "text-muted-foreground line-through" : "text-bull"}`}>
-                    {formatPrice(position.tp)}
-                  </span>
-                  <span className="text-muted-foreground">TP2</span>
-                  <span className="text-right font-mono text-bull">
-                    {formatPrice(position.tp2)}
-                  </span>
+                  <span className="text-right font-mono text-foreground">{formatPrice(position.entryPrice)}</span>
+                  <span className="text-muted-foreground">SL</span>
+                  <span className="text-right font-mono text-bear">{formatPrice(position.sl)}</span>
                   <span className="text-muted-foreground">P&L</span>
-                  <span
-                    className={`text-right font-mono font-semibold ${
-                      unrealizedPnl >= 0 ? "text-bull" : "text-bear"
-                    }`}
-                  >
+                  <span className={`text-right font-mono font-semibold ${unrealizedPnl >= 0 ? "text-bull" : "text-bear"}`}>
                     {unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toFixed(2)} ({formatPct(unrealizedPct)})
                   </span>
                 </div>
@@ -393,7 +401,7 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
             )}
 
             {/* No position — show trade history */}
-            {!position && history.length > 0 && (
+            {serverPositions.length === 0 && !position && history.length > 0 && (
               <div className="px-3 py-2">
                 <span className="text-[10px] text-muted-foreground/60 font-semibold">
                   Historial ({history.length} {history.length === 1 ? "trade" : "trades"})
@@ -437,7 +445,7 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
             )}
 
             {/* Empty state */}
-            {!position && !lastTrade && (
+            {serverPositions.length === 0 && !position && !lastTrade && (
               <div className="px-3 py-3 text-center">
                 <span className="text-[10px] text-muted-foreground/50">
                   Sin trades aun. Usa "Simular entrada" en un par con senal.

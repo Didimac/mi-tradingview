@@ -15,7 +15,8 @@ export async function GET() {
       ok: true,
       capital: state.capital,
       startCapital: state.startCapital,
-      position: state.position,
+      position: state.positions[0] ?? null,
+      positions: state.positions,
       history: state.history,
       autoMode: state.autoMode,
       lastScanTime: state.lastScanTime,
@@ -40,6 +41,7 @@ export async function POST(req: Request) {
     if (body.reset === true) {
       state.capital = state.startCapital;
       state.position = null;
+      state.positions = [];
       state.history = [];
       state.lastSignalTimes = {};
     }

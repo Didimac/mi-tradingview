@@ -1,13 +1,9 @@
 /**
- * Vercel Cron Job: SmartScorer scan + auto paper trading
+ * Vercel Cron Job: SmartScorer v3 scan + auto paper trading
  *
- * Runs every 15 min (via vercel.json cron or external trigger).
- * 1. Fetches candles from Binance for BTC/SOL/BNB
- * 2. Runs SmartScorer v2 Variant A
- * 3. Auto-opens paper trade if score >= 75 + autoMode ON
- * 4. Checks open position SL/TP against current price
- * 5. Sends Telegram notifications
- * 6. Persists state to Vercel Blob
+ * Runs every 15 min. Scans 8 pairs x 2 timeframes (15m, 1h).
+ * Up to 3 concurrent positions on different pairs.
+ * SSL Hybrid + RSI Primet as 4th scoring module.
  */
 
 import { NextResponse } from "next/server";
@@ -22,14 +18,14 @@ import {
   saveState,
   openPosition,
   checkPriceAction,
-  type TradingState,
   type ScanResult,
 } from "@/lib/server/tradingState";
 
 // ─── Constants ───
 
-const PAIRS = ["BTCUSDT", "SOLUSDT", "BNBUSDT"];
-const COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2h per pair
+const PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT"];
+const TIMEFRAMES = ["15m", "1h"] as const;
+const COOLDOWN_MS = 45 * 60 * 1000; // 45min per pair
 
 // ─── Telegram helper (direct server-side) ───
 
@@ -93,6 +89,8 @@ function isAuthorized(req: Request): boolean {
 
 // ─── Main handler ───
 
+export const maxDuration = 60;
+
 export async function GET(req: Request) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -105,35 +103,34 @@ export async function GET(req: Request) {
   try {
     // 1. Load state from Blob
     let state = await loadState();
-    log.push(`State loaded: capital=$${state.capital.toFixed(2)}, position=${state.position?.symbol ?? "none"}, autoMode=${state.autoMode}`);
+    log.push(`State loaded: capital=$${state.capital.toFixed(2)}, positions=${state.positions.length}/3 [${state.positions.map(p => p.symbol).join(",")}], autoMode=${state.autoMode}`);
 
-    // 2. Check open position against current prices FIRST
-    if (state.position) {
-      const posSymbol = state.position.symbol;
+    // 2. Check all open positions against current prices
+    for (const pos of [...state.positions]) {
       try {
-        const candles = await fetchKlines(posSymbol, "1h", 2);
+        const candles = await fetchKlines(pos.symbol, "15m", 2);
         const lastCandle = candles[candles.length - 1];
 
-        const result = checkPriceAction(state, lastCandle.high, lastCandle.low, lastCandle.close);
+        const result = checkPriceAction(state, lastCandle.high, lastCandle.low, lastCandle.close, pos.symbol);
 
         if (result.event === "tp1_partial") {
           state = result.state;
-          const msg = `\u{1F4B0} <b>TP1 PARCIAL — ${posSymbol.replace("USDT", "")}</b>\n50% cerrado | +${result.pnlPct!.toFixed(2)}%\nSL movido a breakeven\nCapital: $${state.capital.toFixed(2)}`;
+          const msg = `\u{1F4B0} <b>TP1 PARCIAL — ${pos.symbol.replace("USDT", "")}</b>\n50% cerrado | +${result.pnlPct!.toFixed(2)}%\nSL movido a breakeven\nCapital: $${state.capital.toFixed(2)}`;
           await sendTelegram(msg);
-          events.push(`TP1 partial ${posSymbol}`);
-          log.push(`TP1 partial close: ${posSymbol} +${result.pnlPct!.toFixed(2)}%`);
+          events.push(`TP1 partial ${pos.symbol}`);
+          log.push(`TP1 partial close: ${pos.symbol} +${result.pnlPct!.toFixed(2)}%`);
         } else if (result.event === "tp2_close" || result.event === "sl_close") {
           state = result.state;
           const isWin = result.pnl! >= 0;
           const emoji = isWin ? "\u{2705}" : "\u{1F534}";
           const label = result.event === "tp2_close" ? "TP alcanzado" : "SL tocado";
-          const msg = `${emoji} <b>${label} — ${posSymbol.replace("USDT", "")}</b>\nResultado: ${isWin ? "+" : ""}${result.pnlPct!.toFixed(2)}%\nCapital: $${state.capital.toFixed(2)}`;
+          const msg = `${emoji} <b>${label} — ${pos.symbol.replace("USDT", "")}</b>\nResultado: ${isWin ? "+" : ""}${result.pnlPct!.toFixed(2)}%\nPosiciones abiertas: ${state.positions.length}\nCapital: $${state.capital.toFixed(2)}`;
           await sendTelegram(msg);
-          events.push(`${result.event} ${posSymbol}`);
-          log.push(`Trade closed: ${posSymbol} ${label} pnl=${result.pnlPct!.toFixed(2)}%`);
+          events.push(`${result.event} ${pos.symbol}`);
+          log.push(`Trade closed: ${pos.symbol} ${label} pnl=${result.pnlPct!.toFixed(2)}%`);
         }
       } catch (e) {
-        log.push(`Error checking position ${posSymbol}: ${e}`);
+        log.push(`Error checking position ${pos.symbol}: ${e}`);
       }
     }
 
@@ -142,20 +139,32 @@ export async function GET(req: Request) {
     const regime = calcBtcRegime(btcDaily);
     log.push(`BTC regime: ${regime}`);
 
-    // 4. Score all pairs
+    // 4. Score all pairs x timeframes (parallel fetch, sequential score)
     const scanResults: ScanResult[] = [];
+    const bestByPair: Record<string, { score: Awaited<ReturnType<typeof scoreOpportunityDual>>; tf: string }> = {};
 
-    for (const symbol of PAIRS) {
+    // Fetch all candles in parallel
+    const fetchJobs = PAIRS.flatMap((symbol) =>
+      TIMEFRAMES.map((tf) =>
+        fetchKlines(symbol, tf, 300)
+          .then((candles) => ({ symbol, tf, candles, error: null as string | null }))
+          .catch((e) => ({ symbol, tf, candles: [] as Awaited<ReturnType<typeof fetchKlines>>, error: String(e) })),
+      ),
+    );
+    const fetched = await Promise.all(fetchJobs);
+
+    // Score each result
+    for (const { symbol, tf, candles, error } of fetched) {
+      if (error || candles.length < 60) {
+        if (error) log.push(`Error fetching ${symbol}/${tf}: ${error}`);
+        continue;
+      }
       try {
-        const [c1h, c4h] = await Promise.all([
-          fetchKlines(symbol, "1h", 100),
-          fetchKlines(symbol, "4h", 100),
-        ]);
-
-        const score = await scoreOpportunityDual(symbol, c1h, c4h, regime, state.capital);
+        const score = await scoreOpportunityDual(symbol, candles, [], regime, state.capital);
 
         scanResults.push({
           symbol: score.symbol,
+          timeframe: tf,
           score: score.score,
           direction: score.direction,
           regime: score.regime,
@@ -163,6 +172,7 @@ export async function GET(req: Request) {
             fundingRate: score.components.fundingRate,
             rsiDivergence: score.components.rsiDivergence,
             vwapWeekly: score.components.vwapWeekly,
+            ssl: score.components.ssl,
           },
           entry: score.entry,
           stopLoss: score.stopLoss,
@@ -172,58 +182,65 @@ export async function GET(req: Request) {
           reason: score.reason,
         });
 
-        log.push(`${symbol}: score=${score.score} dir=${score.direction} FR=${score.components.fundingRate} Div=${score.components.rsiDivergence} VWAP=${score.components.vwapWeekly}`);
+        log.push(`${symbol}/${tf}: score=${score.score} dir=${score.direction} FR=${score.components.fundingRate} Div=${score.components.rsiDivergence} VWAP=${score.components.vwapWeekly} SSL=${score.components.ssl}`);
 
-        // 5. Auto-trade logic
-        if (state.autoMode && isAlertEligible(score) && !state.position) {
-          // Check cooldown
-          const lastTime = state.lastSignalTimes[symbol] ?? 0;
-          if (Date.now() - lastTime >= COOLDOWN_MS) {
-            const side = score.direction === "LONG" ? "long" : "short";
-            const result = openPosition(state, {
-              symbol,
-              side: side as "long" | "short",
-              price: score.entry,
-              sl: score.stopLoss,
-              tp1: score.takeProfit1,
-              tp2: score.takeProfit2,
-              reason: `SmartScorer v2 | Score ${score.score} | ${score.reason}`,
-            });
-
-            if (result.opened) {
-              state = result.state;
-              state.lastSignalTimes[symbol] = Date.now();
-
-              // Send Telegram
-              const sym = symbol.replace("USDT", "");
-              const slPct = pctBetween(score.entry, score.stopLoss);
-              const tp1Pct = pctBetween(score.entry, score.takeProfit1);
-              const tp2Pct = pctBetween(score.entry, score.takeProfit2);
-
-              await sendTelegram([
-                `\u{1F4CA} <b>SENAL DETECTADA — ${sym} ${score.direction}</b>`,
-                `\u{1F916} Entrando automaticamente en paper trading`,
-                ``,
-                `Score: ${score.score}/100 | BTC: ${regime}`,
-                `─────────────────────────`,
-                `Precio:       $${fmtPrice(score.entry)}`,
-                `Stop Loss:    $${fmtPrice(score.stopLoss)}  (${slPct}%)`,
-                `Take Profit 1: $${fmtPrice(score.takeProfit1)}  (+${tp1Pct}%)`,
-                `Take Profit 2: $${fmtPrice(score.takeProfit2)}  (+${tp2Pct}%)`,
-                `Lotaje:       $${Math.round(score.positionUSDT)} USDT`,
-              ].join("\n"));
-
-              await sendTelegram(
-                `\u{1F3AF} <b>ENTRADA EJECUTADA — ${sym} ${score.direction}</b>\n\nPrecio: $${fmtPrice(score.entry)}\n\u{23F3} Monitoreando SL/TP cada 15 min...`,
-              );
-
-              events.push(`AUTO ENTRY: ${side.toUpperCase()} ${symbol} @ ${score.entry}`);
-              log.push(`Auto-entered ${side} ${symbol} @ ${score.entry}`);
-            }
-          }
+        const prev = bestByPair[symbol];
+        if (!prev || score.score > prev.score.score) {
+          bestByPair[symbol] = { score, tf };
         }
       } catch (e) {
-        log.push(`Error scoring ${symbol}: ${e}`);
+        log.push(`Error scoring ${symbol}/${tf}: ${e}`);
+      }
+    }
+
+    // 5. Auto-trade: use best score per pair
+    if (state.autoMode) {
+      const candidates = Object.entries(bestByPair)
+        .filter(([, { score }]) => isAlertEligible(score))
+        .sort(([, a], [, b]) => b.score.score - a.score.score);
+
+      for (const [symbol, { score, tf }] of candidates) {
+        if (state.positions.some((p) => p.symbol === symbol)) continue;
+
+        const lastTime = state.lastSignalTimes[symbol] ?? 0;
+        if (Date.now() - lastTime < COOLDOWN_MS) continue;
+
+        const side = score.direction === "LONG" ? "long" : "short";
+        const result = openPosition(state, {
+          symbol,
+          side: side as "long" | "short",
+          price: score.entry,
+          sl: score.stopLoss,
+          tp1: score.takeProfit1,
+          tp2: score.takeProfit2,
+          reason: `v3 ${tf} | Score ${score.score}/125 | ${score.reason}`,
+        });
+
+        if (result.opened) {
+          state = result.state;
+          state.lastSignalTimes[symbol] = Date.now();
+
+          const sym = symbol.replace("USDT", "");
+          const slPct = pctBetween(score.entry, score.stopLoss);
+          const tp1Pct = pctBetween(score.entry, score.takeProfit1);
+          const tp2Pct = pctBetween(score.entry, score.takeProfit2);
+
+          await sendTelegram([
+            `\u{1F4CA} <b>SENAL — ${sym} ${score.direction} (${tf})</b>`,
+            `\u{1F916} Entrada auto | Pos ${state.positions.length}/3`,
+            ``,
+            `Score: ${score.score}/125 | BTC: ${regime}`,
+            `─────────────────────────`,
+            `Precio:       $${fmtPrice(score.entry)}`,
+            `Stop Loss:    $${fmtPrice(score.stopLoss)}  (${slPct}%)`,
+            `TP1:          $${fmtPrice(score.takeProfit1)}  (+${tp1Pct}%)`,
+            `TP2:          $${fmtPrice(score.takeProfit2)}  (+${tp2Pct}%)`,
+            `Lotaje:       $${Math.round(score.positionUSDT)} USDT`,
+          ].join("\n"));
+
+          events.push(`AUTO ENTRY: ${side.toUpperCase()} ${symbol} @ ${score.entry} (${tf})`);
+          log.push(`Auto-entered ${side} ${symbol} @ ${score.entry} (${tf})`);
+        }
       }
     }
 
@@ -244,7 +261,8 @@ export async function GET(req: Request) {
         score: s.score,
         direction: s.direction,
       })),
-      position: state.position?.symbol ?? null,
+      positions: state.positions.map((p) => p.symbol),
+      positionCount: state.positions.length,
       capital: state.capital,
       autoMode: state.autoMode,
       events,

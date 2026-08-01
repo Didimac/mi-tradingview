@@ -16,8 +16,9 @@ import {
   calcEMA,
 } from "@/lib/scoring/smartScorer";
 import { calcBtcRegime } from "@/lib/scoring/opportunityScorer";
+import { sslHybrid, rsiPrimet } from "@/lib/indicators";
 
-const PAIRS = ["BTCUSDT", "SOLUSDT", "BNBUSDT"];
+const PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT"];
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -39,7 +40,7 @@ export async function GET(req: Request) {
 
   for (const symbol of PAIRS) {
     try {
-      const candles = await fetchKlines(symbol, "1h", 100);
+      const candles = await fetchKlines(symbol, "1h", 300);
       const last = candles.length - 1;
       const price = candles[last].close;
       const closes = candles.map((c) => c.close);
@@ -65,19 +66,30 @@ export async function GET(req: Request) {
       const vwap = calcWeeklyVWAP(candles, last);
       const vwapComponent = scoreVWAP(price, vwap);
 
-      // Directional check
-      const dirs = [frComponent.direction, divComponent.direction, vwapComponent.direction]
+      // 4. SSL Hybrid + RSI Primet
+      const sslData = sslHybrid(candles, 65);
+      const rsiPData = rsiPrimet(candles, 35, 5);
+      const lastSsl = sslData.length > 0 ? sslData[sslData.length - 1] : null;
+      const lastRsiP = rsiPData.length > 0 ? rsiPData[rsiPData.length - 1] : null;
+      let sslPoints = 0;
+      let sslDir: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+      if (lastSsl && lastRsiP) {
+        if (lastSsl.direction === 1 && lastRsiP.isGreen) { sslPoints = 25; sslDir = "LONG"; }
+        else if (lastSsl.direction === -1 && !lastRsiP.isGreen) { sslPoints = 25; sslDir = "SHORT"; }
+        else if (lastSsl.direction === 1 || lastRsiP.isGreen) { sslPoints = 10; sslDir = "LONG"; }
+        else if (lastSsl.direction === -1 || !lastRsiP.isGreen) { sslPoints = 10; sslDir = "SHORT"; }
+      }
+
+      // Directional check (4 modules)
+      const dirs = [frComponent.direction, divComponent.direction, vwapComponent.direction, sslDir]
         .filter((d) => d !== "NEUTRAL");
       const longCount = dirs.filter((d) => d === "LONG").length;
       const shortCount = dirs.filter((d) => d === "SHORT").length;
 
-      // EMA55 trend
       const trendDirection = price > ema55Val ? "BULLISH" : "BEARISH";
 
-      // Raw score (no gates)
-      const rawScore = frComponent.points + divComponent.points + vwapComponent.points;
+      const rawScore = frComponent.points + divComponent.points + vwapComponent.points + sslPoints;
 
-      // Simulate adjusted score (matching opportunityScorer logic)
       const bestDir = longCount >= shortCount ? "LONG" : "SHORT";
       let frContradiction = false;
       let simScore = rawScore;
@@ -90,7 +102,6 @@ export async function GET(req: Request) {
       if (ema55Penalty) simScore = Math.round(simScore * 0.9);
       if (regime === "BEAR" && bestDir === "LONG") simScore = Math.round(simScore * 0.85);
 
-      // Gate analysis
       const gates: string[] = [];
       if (candles.length < 60) gates.push("BLOCKED: candles < 60");
       if (isNaN(atrVal) || atrVal <= 0) gates.push("BLOCKED: ATR invalid");
@@ -99,9 +110,9 @@ export async function GET(req: Request) {
       if (frContradiction) gates.push("PENALTY: FR contradiction -15pts");
       if (ema55Penalty) gates.push("PENALTY: -10% below EMA55");
       if (regime === "BEAR" && bestDir === "LONG") gates.push("PENALTY: -15% BEAR regime on LONG");
-      if (simScore < 70) gates.push(`BELOW THRESHOLD: adjusted score ${simScore} < 70`);
-      if (simScore >= 70) gates.push(`✅ SIGNAL ELIGIBLE: adjusted score ${simScore} >= 70`);
-      if (gates.length === 0) gates.push("ALL GATES PASSED ✓");
+      if (simScore < 60) gates.push(`BELOW THRESHOLD: adjusted score ${simScore} < 60`);
+      if (simScore >= 60) gates.push(`SIGNAL ELIGIBLE: adjusted score ${simScore} >= 60`);
+      if (gates.length === 0) gates.push("ALL GATES PASSED");
 
       results.push({
         symbol,
@@ -137,15 +148,22 @@ export async function GET(req: Request) {
             : `${Math.abs(vwapComponent.distancePct).toFixed(2)}% from VWAP`,
         },
         rawScore,
+        ssl: {
+          direction: lastSsl?.direction ?? "N/A",
+          rsiPrimetGreen: lastRsiP?.isGreen ?? "N/A",
+          points: sslPoints,
+          sslDir,
+        },
         directionalAgreement: {
           directions: [
             `FR: ${frComponent.direction}`,
             `Div: ${divComponent.direction}`,
             `VWAP: ${vwapComponent.direction}`,
+            `SSL: ${sslDir}`,
           ],
           longCount,
           shortCount,
-          neutralCount: 3 - dirs.length,
+          neutralCount: 4 - dirs.length,
         },
         gates,
       });
