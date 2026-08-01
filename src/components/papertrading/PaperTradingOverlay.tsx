@@ -117,9 +117,9 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
             usePaperTrading.setState({
               position: { ...serverPos, tp: serverPos.tp1 },
             });
-          } else if (!serverPos && localPos) {
-            usePaperTrading.setState({ position: null });
           }
+          // Don't clear local position when server has none —
+          // client-opened trades are authoritative locally
           if (data.history?.length > store.history.length) {
             usePaperTrading.setState({ history: data.history });
           }

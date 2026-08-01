@@ -37,6 +37,15 @@ export async function POST(req: Request) {
       state.autoMode = body.autoMode;
     }
 
+    // Sync a client-opened position to server
+    if (body.syncPosition) {
+      const p = body.syncPosition;
+      if (state.positions.length < 3 && !state.positions.some((x: { symbol: string }) => x.symbol === p.symbol)) {
+        state.positions.push(p);
+        state.position = state.positions[0] ?? null;
+      }
+    }
+
     // Reset
     if (body.reset === true) {
       state.capital = state.startCapital;

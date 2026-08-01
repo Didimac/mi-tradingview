@@ -109,7 +109,7 @@ async function autoEnterTrade(score: OpportunityScore): Promise<boolean> {
   sendAutoSignalDetected(score);
 
   // Open paper trade
-  const opened = autoOpenTrade({
+  const tradeParams = {
     symbol: score.symbol,
     side: side as "long" | "short",
     price,
@@ -117,11 +117,37 @@ async function autoEnterTrade(score: OpportunityScore): Promise<boolean> {
     tp: score.takeProfit1,
     tp2: score.takeProfit2,
     reason: `SmartScorer v2 | Score ${score.score} | ${score.reason}`,
-  });
+  };
+  const opened = autoOpenTrade(tradeParams);
 
   if (!opened) {
     console.log(`[AutoPaper] Failed to open trade for ${score.symbol}`);
     return false;
+  }
+
+  // Sync position to server so it survives page refresh
+  const localPos = usePaperTrading.getState().position;
+  if (localPos) {
+    fetch("/api/paper-trading/state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        syncPosition: {
+          id: localPos.id,
+          symbol: localPos.symbol,
+          side: localPos.side,
+          entryPrice: localPos.entryPrice,
+          qty: localPos.qty,
+          sl: localPos.sl,
+          tp1: localPos.tp,
+          tp2: localPos.tp2,
+          entryTime: localPos.entryTime,
+          reason: localPos.reason,
+          partialClosed: false,
+          originalQty: localPos.originalQty,
+        },
+      }),
+    }).catch(() => {});
   }
 
   // Phase 2: Send "entry executed at $price"
