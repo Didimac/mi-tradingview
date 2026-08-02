@@ -189,6 +189,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       rightPriceScale: {
         borderColor: TV_COLORS.border,
         textColor: TV_COLORS.textMuted,
+        minimumWidth: 70,
       },
       timeScale: {
         borderColor: TV_COLORS.border,

@@ -246,9 +246,9 @@ export function PaperTradingPanel() {
               <span className="text-xs text-muted-foreground">Capital</span>
               <span className="text-lg font-mono font-bold text-foreground">${formatPrice(capital)}</span>
             </div>
-            {allPositions.length > 0 && totalUnrealized !== 0 && (
+            {allPositions.length > 1 && totalUnrealized !== 0 && (
               <div className="flex items-baseline justify-between mt-0.5">
-                <span className="text-[10px] text-muted-foreground/50">No realizado</span>
+                <span className="text-[10px] text-muted-foreground/50">No realizado ({allPositions.length} pos)</span>
                 <span className={cn("text-xs font-mono font-medium", totalUnrealized >= 0 ? "text-bull" : "text-bear")}>
                   {totalUnrealized >= 0 ? "+" : ""}${totalUnrealized.toFixed(2)}
                 </span>
@@ -321,6 +321,8 @@ export function PaperTradingPanel() {
                   const elapsed = Math.floor((Date.now() - entryTime) / 60000);
                   const elapsedStr = elapsed < 60 ? `${elapsed}m` : `${Math.floor(elapsed / 60)}h${elapsed % 60}m`;
                   const posSize = qty * entryPrice;
+                  const entryDate = new Date(entryTime);
+                  const entryDateStr = `${entryDate.getDate()}/${entryDate.getMonth() + 1} ${entryDate.getHours().toString().padStart(2, "0")}:${entryDate.getMinutes().toString().padStart(2, "0")}`;
 
                   return (
                     <div key={id} className="rounded-lg border border-border/30 overflow-hidden">
@@ -353,39 +355,34 @@ export function PaperTradingPanel() {
                       </div>
 
                       {/* Position body */}
-                      <div className="px-2.5 py-2 space-y-1.5">
-                        {/* Entry + Size */}
+                      <div className="px-2.5 py-2 space-y-1">
+                        {/* Entry + Date */}
                         <div className="flex items-center justify-between text-[10px]">
                           <span className="text-muted-foreground">Entrada</span>
                           <span className="font-mono text-foreground">${formatPrice(entryPrice)}</span>
                         </div>
                         <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-muted-foreground">Fecha</span>
+                          <span className="font-mono text-muted-foreground/60">{entryDateStr}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px]">
                           <span className="text-muted-foreground">Tamano</span>
-                          <span className="font-mono text-muted-foreground">${posSize.toFixed(0)}</span>
+                          <span className="font-mono text-muted-foreground">${posSize.toFixed(0)} USDT</span>
                         </div>
 
-                        {/* SL / TP row */}
-                        <div className="grid grid-cols-3 gap-1 mt-1">
-                          <div className="flex items-center gap-1 rounded bg-bear/5 px-1.5 py-1">
-                            <ShieldAlert size={9} className="text-bear/60" />
-                            <div className="text-[9px]">
-                              <div className="text-bear/60">SL{partialClosed ? " (BE)" : ""}</div>
-                              <div className="font-mono text-bear font-medium">{formatPrice(sl)}</div>
-                            </div>
+                        {/* SL / TP rows */}
+                        <div className="space-y-0.5 mt-1">
+                          <div className="flex items-center justify-between text-[10px] rounded px-1.5 py-0.5 bg-bear/5">
+                            <span className="text-bear/70 flex items-center gap-1"><ShieldAlert size={9} />SL{partialClosed ? " (BE)" : ""}</span>
+                            <span className="font-mono text-bear font-medium">${formatPrice(sl)}</span>
                           </div>
-                          <div className="flex items-center gap-1 rounded bg-yellow-500/5 px-1.5 py-1">
-                            <Target size={9} className="text-yellow-500/60" />
-                            <div className="text-[9px]">
-                              <div className="text-yellow-500/60">TP1</div>
-                              <div className="font-mono text-yellow-500 font-medium">{formatPrice(tp1)}</div>
-                            </div>
+                          <div className="flex items-center justify-between text-[10px] rounded px-1.5 py-0.5 bg-yellow-500/5">
+                            <span className="text-yellow-500/70 flex items-center gap-1"><Target size={9} />TP1 (50%)</span>
+                            <span className="font-mono text-yellow-500 font-medium">${formatPrice(tp1)}</span>
                           </div>
-                          <div className="flex items-center gap-1 rounded bg-bull/5 px-1.5 py-1">
-                            <Target size={9} className="text-bull/60" />
-                            <div className="text-[9px]">
-                              <div className="text-bull/60">TP2</div>
-                              <div className="font-mono text-bull font-medium">{formatPrice(tp2)}</div>
-                            </div>
+                          <div className="flex items-center justify-between text-[10px] rounded px-1.5 py-0.5 bg-bull/5">
+                            <span className="text-bull/70 flex items-center gap-1"><Target size={9} />TP2 (100%)</span>
+                            <span className="font-mono text-bull font-medium">${formatPrice(tp2)}</span>
                           </div>
                         </div>
 
@@ -397,7 +394,7 @@ export function PaperTradingPanel() {
                           {hasPrice ? (
                             <>
                               <span className="text-[10px] text-muted-foreground">
-                                {formatPrice(currentPrice)}
+                                Actual ${formatPrice(currentPrice)}
                               </span>
                               <span className={cn("text-sm font-mono font-bold", pnl >= 0 ? "text-bull" : "text-bear")}>
                                 {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
