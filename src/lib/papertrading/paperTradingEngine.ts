@@ -415,10 +415,15 @@ export function startPriceMonitor() {
   if (monitorUnsub) return;
   const ws = getBinanceWS();
 
+  const lastPriceUpdate: Record<string, number> = {};
   monitorUnsub = ws.subscribeMiniTickers(MONITORED_PAIRS, (tick) => {
     const store = usePaperTrading.getState();
-    store.setLivePrice(tick.symbol, tick.close);
     store.checkPrice(tick.symbol, tick.close);
+    const now = Date.now();
+    if (!lastPriceUpdate[tick.symbol] || now - lastPriceUpdate[tick.symbol] > 2000) {
+      lastPriceUpdate[tick.symbol] = now;
+      store.setLivePrice(tick.symbol, tick.close);
+    }
   });
 }
 

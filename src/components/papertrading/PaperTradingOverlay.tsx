@@ -221,14 +221,14 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
   }, startCapital);
   const drawdown = maxCapital > 0 ? ((maxCapital - capital) / maxCapital) * 100 : 0;
 
-  // P&L for a position
+  // P&L for a position — uses livePrices from WS, falls back to livePrice prop for chart symbol
   const calcPnl = (pos: { side: string; entryPrice: number; qty: number; symbol: string }) => {
-    const price = livePrices[pos.symbol];
-    if (!price) return { pnl: 0, pnlPct: 0, hasPrice: false };
+    const price = livePrices[pos.symbol] ?? (pos.symbol === chartSymbol ? livePrice : null);
+    if (!price) return { pnl: 0, pnlPct: 0, hasPrice: false, price: 0 };
     const diff = pos.side === "long" ? price - pos.entryPrice : pos.entryPrice - price;
     const pnl = diff * pos.qty;
     const pnlPct = capital > 0 ? (pnl / capital) * 100 : 0;
-    return { pnl, pnlPct, hasPrice: true };
+    return { pnl, pnlPct, hasPrice: true, price };
   };
 
   // All positions: server + local (deduplicated)
@@ -382,7 +382,7 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
                     const partialClosed = isServer ? entry.pos!.partialClosed : entry.localPos!.partialClosed;
                     const id = isServer ? entry.pos!.id : entry.localPos!.id;
                     const entryTime = isServer ? entry.pos!.entryTime : entry.localPos!.entryTime;
-                    const { pnl, pnlPct, hasPrice } = calcPnl({ side, entryPrice, qty, symbol: sym });
+                    const { pnl, pnlPct, hasPrice, price: currentPrice } = calcPnl({ side, entryPrice, qty, symbol: sym });
                     const isClosing = closingId === id;
                     const elapsed = Math.floor((Date.now() - entryTime) / 60000);
                     const elapsedStr = elapsed < 60 ? `${elapsed}m` : `${Math.floor(elapsed / 60)}h${elapsed % 60}m`;
@@ -420,14 +420,23 @@ export function PaperTradingOverlay({ livePrice }: { livePrice: number | null })
                             <div className="font-mono text-bull">{formatPrice(tp2)}</div>
                           </div>
                         </div>
-                        {hasPrice && (
-                          <div className="flex items-center justify-between mt-1 pt-1 border-t border-border/10">
-                            <span className="text-[9px] text-muted-foreground/50">P&L</span>
-                            <span className={cn("text-[10px] font-mono font-bold", pnl >= 0 ? "text-bull" : "text-bear")}>
-                              {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%)
-                            </span>
-                          </div>
-                        )}
+                        <div className={cn(
+                          "flex items-center justify-between mt-1 pt-1 border-t border-border/10",
+                          hasPrice && (pnl >= 0 ? "bg-bull/5" : "bg-bear/5"), "rounded-b px-1 -mx-1"
+                        )}>
+                          {hasPrice ? (
+                            <>
+                              <span className="text-[9px] text-muted-foreground/50">
+                                Actual {formatPrice(currentPrice)}
+                              </span>
+                              <span className={cn("text-[11px] font-mono font-bold", pnl >= 0 ? "text-bull" : "text-bear")}>
+                                {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-[9px] text-muted-foreground/40 animate-pulse">Conectando precio...</span>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
