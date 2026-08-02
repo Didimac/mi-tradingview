@@ -26,7 +26,7 @@ import {
 import { formatPrice, formatVolume } from "@/lib/format";
 import { IndicatorPill } from "./IndicatorPill";
 import { MeasureOverlay } from "./MeasureOverlay";
-import { PaperTradingOverlay } from "@/components/papertrading/PaperTradingOverlay";
+// PaperTradingOverlay removed — now in RightSidebar panel
 
 interface MeasurePoint {
   time: number;
@@ -1024,7 +1024,6 @@ export function PriceChart({ symbol, timeframe }: Props) {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
-      <PaperTradingOverlay livePrice={lastPrice?.value ?? null} />
       {measureRender}
 
       {/* Top-left of main pane: symbol info + OHLC + Volume pill + EMA pills */}
