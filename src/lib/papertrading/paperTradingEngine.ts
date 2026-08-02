@@ -90,6 +90,8 @@ interface PaperTradingState {
   autoMode: boolean;
   /** Server-detected mode: paper (no API key) or real (API key configured) */
   tradingMode: TradingMode;
+  /** Live prices from WebSocket for P&L calculation */
+  livePrices: Record<string, number>;
 
   // Actions
   openTrade: (params: {
@@ -107,6 +109,8 @@ interface PaperTradingState {
   dismissToast: (id: string) => void;
   setAutoMode: (on: boolean) => void;
   setTradingMode: (mode: TradingMode) => void;
+  setLivePrice: (symbol: string, price: number) => void;
+  reloadCapital: () => void;
   reset: () => void;
 }
 
@@ -132,9 +136,13 @@ export const usePaperTrading = create<PaperTradingState>()(
       riskPerTrade: RISK_PER_TRADE,
       autoMode: false,       // default OFF (safer)
       tradingMode: "paper",  // default paper until server check
+      livePrices: {},
 
       setAutoMode: (on) => set({ autoMode: on }),
       setTradingMode: (mode) => set({ tradingMode: mode }),
+      setLivePrice: (symbol, price) =>
+        set((s) => ({ livePrices: { ...s.livePrices, [symbol]: price } })),
+      reloadCapital: () => set({ capital: START_CAPITAL }),
 
       openTrade: ({ symbol, side, price, sl, tp, tp2, reason }) => {
         const state = get();
@@ -408,7 +416,9 @@ export function startPriceMonitor() {
   const ws = getBinanceWS();
 
   monitorUnsub = ws.subscribeMiniTickers(MONITORED_PAIRS, (tick) => {
-    usePaperTrading.getState().checkPrice(tick.symbol, tick.close);
+    const store = usePaperTrading.getState();
+    store.setLivePrice(tick.symbol, tick.close);
+    store.checkPrice(tick.symbol, tick.close);
   });
 }
 

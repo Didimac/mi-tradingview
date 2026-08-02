@@ -46,7 +46,34 @@ export async function POST(req: Request) {
       }
     }
 
-    // Reset
+    // Close a specific position at market price
+    if (body.closePosition) {
+      const { positionId, exitPrice } = body.closePosition;
+      const pos = state.positions.find((p: { id: string }) => p.id === positionId);
+      if (pos) {
+        const pnlPerUnit = pos.side === "long"
+          ? exitPrice - pos.entryPrice
+          : pos.entryPrice - exitPrice;
+        const pnl = pnlPerUnit * pos.qty;
+        const pnlPct = (pnl / state.capital) * 100;
+        state.history.push({
+          id: pos.id, symbol: pos.symbol, side: pos.side,
+          entryPrice: pos.entryPrice, exitPrice, qty: pos.qty,
+          pnl, pnlPct, entryTime: pos.entryTime, exitTime: Date.now(),
+          reason: pos.reason, exitReason: "Cierre manual",
+        });
+        state.capital += pnl;
+        state.positions = state.positions.filter((p: { id: string }) => p.id !== positionId);
+        state.position = state.positions[0] ?? null;
+      }
+    }
+
+    // Reload capital to initial amount (keep history)
+    if (body.reloadCapital === true) {
+      state.capital = state.startCapital;
+    }
+
+    // Reset (full — clears everything)
     if (body.reset === true) {
       state.capital = state.startCapital;
       state.position = null;
